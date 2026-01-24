@@ -1,4 +1,5 @@
 export let topicsMap = {
+  'Big picture': 'Big picture',
 	'America': 'America',
 	'Left Is losing it': 'Left Is losing it',
 	'Ukraine': 'Ukraine',
