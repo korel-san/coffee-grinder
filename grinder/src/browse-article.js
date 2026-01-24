@@ -10,12 +10,26 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 async function initialize() {
-	const chromeProfilePath = `${os.homedir()}/AppData/Local/Google/Chrome/Playwright Profile`
+	const platform = os.platform()
+	let chromeExecutablePath
+	let chromeProfilePath
+
+	if (platform === 'darwin') { // macOS
+		chromeExecutablePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+		chromeProfilePath = `${os.homedir()}/Library/Application Support/Google/Chrome/Playwright Profile`
+	} else if (platform === 'win32') { // Windows
+		chromeExecutablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+		chromeProfilePath = `${os.homedir()}\\AppData\\Local\\Google\\Chrome\\Playwright Profile`
+	} else { // Linux and others
+		chromeExecutablePath = '/usr/bin/google-chrome' // or '/usr/bin/chromium-browser'
+		chromeProfilePath = `${os.homedir()}/.config/google-chrome/Playwright Profile`
+	}
+
 	// log(`Chrome profile path: ${chromeProfilePath}`)
 	let extension = `${__dirname}/../extensions/captcha-solver/0.2.1_0`
 	let context = await chromium.launchPersistentContext(chromeProfilePath, {
 		headless: false,
-		executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+		executablePath: chromeExecutablePath,
 		viewport: { width: 1024, height: 600 },
 		screen: { width: 1024, height: 600 },
 		args: [
