@@ -21,6 +21,7 @@ function parse(xml) {
 				source: font._text,
 			}))
 		} catch(e) {}
+		if (!event.pubDate?._text) return null
 		return {
 			titleEn: event.title?._text, // .replace(` - ${event.source?._text}`, ''),
 			gnUrl: event.link?._text,
@@ -28,8 +29,8 @@ function parse(xml) {
 			date: new Date(event.pubDate._text),
 			articles,
 		}
-	})
-	return items
+	}).filter(Boolean)
+	return items || []
 }
 
 function mergeInto(target, source) {
