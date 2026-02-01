@@ -2,7 +2,7 @@ import { log } from './log.js'
 import { news } from './store.js'
 import { speak } from './eleven.js'
 import { uploadFolder } from './google-drive.js'
-import { autoArchiveFolderId, audioFolderName } from '../config/google-drive.js'
+import { audioFolderName, coffeeTodayFolderId } from '../config/google-drive.js'
 
 export async function audio() {
 	let list = news.filter(e => e.sqk && e.summary)
@@ -17,7 +17,7 @@ export async function audio() {
 	}
 
 	log('\nUploading audio to Drive...')
-	await uploadFolder('../audio', autoArchiveFolderId, audioFolderName, ['.mp3'])
+	await uploadFolder('../audio', coffeeTodayFolderId, audioFolderName, ['.mp3'])
 	log('Audio uploaded.')
 }
 
