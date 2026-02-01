@@ -13,7 +13,15 @@ export let news = []
 // news = proxy(news)
 // subscribe(news, () => fs.writeFileSync('news.json', JSON.stringify(news, null, 2)))
 news = proxy(await loadTable(spreadsheetId, newsSheet))
-subscribe(news, save)
+let unsubscribeNews = subscribe(news, save)
+
+export function disableAutoSave() {
+	unsubscribeNews()
+}
+
+export function enableAutoSave() {
+	unsubscribeNews = subscribe(news, save)
+}
 
 export async function save() {
 	try {

@@ -2,7 +2,7 @@ import fs from 'fs'
 
 import { log } from './log.js'
 import { sleep } from './sleep.js'
-import { news } from './store.js'
+import { disableAutoSave, enableAutoSave, news, save } from './store.js'
 import { topics, topicsMap } from '../config/topics.js'
 // import { restricted } from '../config/agencies.js'
 import { decodeGoogleNewsUrl } from './google-news.js'
@@ -10,6 +10,8 @@ import { fetchArticle } from './fetch-article.js'
 import { htmlToText } from './html-to-text.js'
 import { ai } from './ai.js'
 import { browseArticle, finalyze } from './browse-article.js'
+import { copyFile } from './google-drive.js'
+import { autoSpreadsheetId, coffeeTodayFolderId } from '../config/google-drive.js'
 
 export async function summarize() {
 	news.forEach((e, i) => e.id ||= i + 1)
@@ -85,4 +87,20 @@ export async function summarize() {
 	log('\n', stats)
 }
 
-if (process.argv[1].endsWith('summarize')) summarize()
+if (process.argv[1].endsWith('summarize')) {
+  (async () => {
+    disableAutoSave();
+    await summarize();
+    await save();
+    enableAutoSave();
+    
+    // Copy spreadsheet to coffeeTodayFolderId after summarization
+    try {
+      log('Copying spreadsheet to coffeeTodayFolder...')
+      await copyFile(autoSpreadsheetId, coffeeTodayFolderId, "news-today")
+      log('Spreadsheet copied successfully')
+    } catch (e) {
+      log('Failed to copy spreadsheet', e)
+    }
+  })();
+}
