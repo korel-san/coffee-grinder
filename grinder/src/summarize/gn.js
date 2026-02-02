@@ -14,6 +14,71 @@ import {
 } from './utils.js'
 
 const googleNewsDefaults = 'hl=en-US&gl=US&ceid=US:en'
+const gnSearchCache = new Map()
+let gnSearchCooldownUntil = 0
+
+function setGnSearchCooldown(ms) {
+	gnSearchCooldownUntil = Date.now() + ms
+}
+
+function getGnSearchCooldownMs() {
+	if (Date.now() < gnSearchCooldownUntil) return gnSearchCooldownUntil - Date.now()
+	return 0
+}
+
+async function fetchJson(url, timeoutMs) {
+	let response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs || 10000) })
+	if (!response.ok) {
+		throw new Error(`${response.status} ${response.statusText}`)
+	}
+	return await response.json()
+}
+
+async function searchGoogleNewsViaSerpapi(query) {
+	if (!externalSearch?.enabled || externalSearch.provider !== 'serpapi' || !externalSearch.apiKey) return []
+	let maxResults = externalSearch.maxResults || 6
+	let apiKey = encodeURIComponent(externalSearch.apiKey)
+	let url = `https://serpapi.com/search.json?engine=google_news&hl=en&gl=us&num=${maxResults}&q=${encodeURIComponent(query)}&api_key=${apiKey}`
+	try {
+		let json = await fetchJson(url, externalSearch.timeoutMs || 10000)
+		let results = Array.isArray(json?.news_results) ? json.news_results : []
+		let items = []
+		for (let item of results) {
+			if (item) items.push(item)
+			if (Array.isArray(item?.stories)) {
+				for (let story of item.stories) items.push(story)
+			}
+		}
+		let mapped = items.map(item => {
+			let link = item?.link || item?.url || ''
+			let gnUrl = ''
+			let directUrl = link
+			if (link) {
+				try {
+					let host = new URL(link).hostname.replace(/^www\./, '')
+					if (host === 'news.google.com') {
+						gnUrl = link
+						directUrl = ''
+					}
+				} catch {}
+			}
+			let source = item?.source?.title || item?.source?.name || item?.source || ''
+			if (!source && link) source = sourceFromUrl(link)
+			return {
+				titleEn: item?.title || '',
+				url: directUrl,
+				gnUrl,
+				source: source || '',
+			}
+		}).filter(item => item.source && (item.url || item.gnUrl))
+		let gnOnly = mapped.filter(item => item.gnUrl)
+		if (gnOnly.length) return gnOnly
+		return mapped
+	} catch (error) {
+		log('Google News serpapi fallback failed', error?.message || error)
+		return []
+	}
+}
 
 export function parseRelatedArticles(description) {
 	if (!description) return []
@@ -112,20 +177,55 @@ export function scoreGnCandidate(event, candidate) {
 
 export async function searchGoogleNews(query, last) {
 	if (!query) return []
+	let cooldownMs = getGnSearchCooldownMs()
+	if (cooldownMs > 0) {
+		log('Google News search cooldown active', Math.ceil(cooldownMs / 1000), 's')
+		let serpapiResults = await searchGoogleNewsViaSerpapi(query)
+		if (serpapiResults.length) {
+			log('Google News search fallback (serpapi) returned', serpapiResults.length)
+			gnSearchCache.set(query, { time: Date.now(), results: serpapiResults })
+		}
+		return serpapiResults
+	}
+	let cache = gnSearchCache.get(query)
+	if (cache && (Date.now() - cache.time) < 5 * 60e3) {
+		return cache.results
+	}
 	await sleep(last.gnSearch.time + last.gnSearch.delay - Date.now())
 	last.gnSearch.time = Date.now()
 	let url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&${googleNewsDefaults}`
 	try {
-		let response = await fetch(url)
+		let response = await fetch(url, {
+			headers: {
+				'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+				'Accept-Language': 'en-US,en;q=0.9',
+				'Accept': 'application/rss+xml,application/xml;q=0.9,*/*;q=0.8',
+			},
+		})
 		if (!response.ok) {
 			log('Google News search failed', response.status, response.statusText)
-			return []
+			if (response.status === 503 || response.status === 429) {
+				setGnSearchCooldown(10 * 60e3)
+			}
+			let serpapiResults = await searchGoogleNewsViaSerpapi(query)
+			if (serpapiResults.length) {
+				log('Google News search fallback (serpapi) returned', serpapiResults.length)
+				gnSearchCache.set(query, { time: Date.now(), results: serpapiResults })
+			}
+			return serpapiResults
 		}
 		let xml = await response.text()
-		return parseGoogleNewsXml(xml)
+		let results = parseGoogleNewsXml(xml)
+		gnSearchCache.set(query, { time: Date.now(), results })
+		return results
 	} catch(e) {
 		log('Google News search failed', e)
-		return []
+		let serpapiResults = await searchGoogleNewsViaSerpapi(query)
+		if (serpapiResults.length) {
+			log('Google News search fallback (serpapi) returned', serpapiResults.length)
+			gnSearchCache.set(query, { time: Date.now(), results: serpapiResults })
+		}
+		return serpapiResults
 	}
 }
 

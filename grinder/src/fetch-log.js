@@ -60,7 +60,11 @@ function rotateLogIfNeeded(logFile) {
 
 export function logFetch(data, message, level = 'info') {
 	let prefix = level ? `[${level}]` : ''
-	if (message) log(prefix, message)
+	if (message) {
+		let alt = data?.alternativeUrl
+		let msg = alt ? `${message} | alternativeUrl=${alt}` : message
+		log(prefix, msg)
+	}
 	if (data) {
 		let safeData = sanitizeData(data, maxDataStringLength)
 		let logFile = logging.fetchLogFile

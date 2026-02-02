@@ -14,6 +14,7 @@ export function logEvent(event, data, message, level) {
 		title: titleFor(event),
 		source: event?.source,
 		gnUrl: event?.gnUrl,
+		alternativeUrl: event?.alternativeUrl,
 		url: event?.url,
 		...data,
 	}, message, level)

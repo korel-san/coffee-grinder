@@ -112,7 +112,6 @@ export function isBlank(value) {
 }
 
 export const requiredFields = [
-	'gnUrl',
 	'url',
 	'source',
 	'titleEn',
@@ -123,7 +122,11 @@ export const requiredFields = [
 ]
 
 export function missingFields(event) {
-	return requiredFields.filter(field => isBlank(event?.[field]))
+	let missing = requiredFields.filter(field => isBlank(event?.[field]))
+	if (isBlank(event?.gnUrl) && isBlank(event?.alternativeUrl)) {
+		missing.push('gnUrl/alternativeUrl')
+	}
+	return missing
 }
 
 export function isComplete(event) {

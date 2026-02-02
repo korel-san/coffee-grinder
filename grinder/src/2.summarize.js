@@ -445,6 +445,7 @@ export async function summarize() {
 			'titleEn',
 			'titleRu',
 			'gnUrl',
+			'alternativeUrl',
 			'url',
 			'source',
 			articlesColumn,
@@ -613,8 +614,9 @@ export async function summarize() {
 									let extra = results.map(item => ({
 										titleEn: item.titleEn || '',
 										gnUrl: item.gnUrl || '',
+										url: item.url || '',
 										source: item.source || '',
-									})).filter(item => item.gnUrl && item.source)
+									})).filter(item => item.source && (item.gnUrl || item.url))
 									let added = mergeArticles(e, extra)
 									if (added) {
 										totalAdded += added
@@ -766,6 +768,12 @@ export async function summarize() {
 								if (isBlank(e.gnUrl) && !isBlank(alt.gnUrl)) e.gnUrl = alt.gnUrl
 								if (isBlank(e.titleEn) && !isBlank(alt.titleEn)) e.titleEn = alt.titleEn
 								if (isBlank(e.url)) e.url = altUrl
+								if (isBlank(e.gnUrl) && isBlank(e.alternativeUrl) && !isBlank(altUrl)) {
+									let originalUrl = normalizeUrl(e.url || '')
+									if (!originalUrl || originalUrl !== altUrl) {
+										e.alternativeUrl = altUrl
+									}
+								}
 								setOriginalUrlIfMissing(e)
 								log('got', result.text.length, 'chars')
 								saveArticle(e, result.html, result.text)
@@ -834,8 +842,9 @@ export async function summarize() {
 								let extra = results.map(item => ({
 									titleEn: item.titleEn || '',
 									gnUrl: item.gnUrl || '',
+									url: item.url || '',
 									source: item.source || '',
-								})).filter(item => item.gnUrl && item.source)
+								})).filter(item => item.source && (item.gnUrl || item.url))
 								let added = mergeArticles(e, extra)
 								if (added) {
 									forcedGnAdded += added
