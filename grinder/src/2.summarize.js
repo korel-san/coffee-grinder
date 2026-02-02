@@ -2,7 +2,7 @@ import { JSDOM, VirtualConsole } from 'jsdom'
 
 import { log } from './log.js'
 import { sleep } from './sleep.js'
-import { news, pauseAutoSave, resumeAutoSave, saveRowByIndex, spreadsheetId } from './store.js'
+import { news, pauseAutoSave, resumeAutoSave, saveRowByIndex, spreadsheetId, spreadsheetMode } from './store.js'
 import { topics, topicsMap } from '../config/topics.js'
 import { decodeGoogleNewsUrl, getGoogleNewsDecodeCooldownMs } from './google-news.js'
 import { fetchArticle, getLastFetchStatus } from './fetch-article.js'
@@ -13,7 +13,7 @@ import { verifyArticle } from './verify-article.js'
 import { buildVerifyContext } from './verify-context.js'
 import { searchExternal, sourceFromUrl } from './external-search.js'
 import { copyFile } from './google-drive.js'
-import { coffeeTodayFolderId } from '../config/google-drive.js'
+import { coffeeTodayFolderId, newsSheet } from '../config/google-drive.js'
 import {
 	verifyMode,
 	verifyMinConfidence,
@@ -440,6 +440,7 @@ async function fetchTextWithRetry(event, url, last, { isFallback = false } = {})
 export async function summarize() {
 	pauseAutoSave()
 	try {
+		log(`[info] sheet read/write: ${spreadsheetId} (sheet=${newsSheet}, mode=${spreadsheetMode})`)
 		ensureColumns([
 			'titleEn',
 			'titleRu',
@@ -985,7 +986,7 @@ if (process.argv[1].endsWith('summarize')) {
 			return
 		}
 		try {
-			log('Copying spreadsheet to coffeeTodayFolder...')
+			log(`[info] copy spreadsheet: ${spreadsheetId} -> ${coffeeTodayFolderId}`)
 			await copyFile(spreadsheetId, coffeeTodayFolderId, 'news-today')
 			log('Spreadsheet copied successfully')
 		} catch (e) {

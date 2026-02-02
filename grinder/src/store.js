@@ -4,7 +4,8 @@ import { log } from './log.js'
 import { loadTable, saveTable, saveRow } from './google-sheets.js'
 import { mainSpreadsheetId, autoSpreadsheetId, newsSheet } from '../config/google-drive.js'
 
-export let spreadsheetId = process.argv[2]?.endsWith('auto') ? autoSpreadsheetId : mainSpreadsheetId
+export let spreadsheetMode = process.argv[2]?.endsWith('auto') ? 'auto' : 'main'
+export let spreadsheetId = spreadsheetMode === 'auto' ? autoSpreadsheetId : mainSpreadsheetId
 
 export let news = []
 // try {
