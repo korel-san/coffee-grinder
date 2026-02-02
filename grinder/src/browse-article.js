@@ -84,22 +84,24 @@ export async function browseArticle(url, { ignoreCooldown = false } = {}) {
 		})
 
 		let captcha = await page.$('iframe[src*="recaptcha"]')
+		let skipArchive = false
 		if (captcha) {
-			log('waiting for captcha to be solved...')
-			await page.waitForSelector('#CONTENT', { timeout: 180e3 })
-			log('captcha solved')
+			log('[warn] captcha detected on archive; skipping archive')
+			skipArchive = true
 		} else {
 			log('no captcha detected')
 		}
 
-		const versions = await page.$$('.TEXT-BLOCK > a')
-		if (versions.length > 0) {
-			log('going to the newest version...')
-			await versions[0].click()
-			await page.waitForLoadState('load')
+		if (!skipArchive) {
+			const versions = await page.$$('.TEXT-BLOCK > a')
+			if (versions.length > 0) {
+				log('going to the newest version...')
+				await versions[0].click()
+				await page.waitForLoadState('load')
+			}
 		}
 
-		let html =  await page.evaluate(() => {
+		let html = skipArchive ? '' : await page.evaluate(() => {
 			return [...document.querySelectorAll('.body')].map(x => x.innerHTML).join('')
 		})
 
@@ -134,6 +136,11 @@ export async function browseArticle(url, { ignoreCooldown = false } = {}) {
 					throw err
 				}
 				log(e)
+			}
+			let sourceCaptcha = await page.$('iframe[src*="recaptcha"]')
+			if (sourceCaptcha) {
+				log('[warn] captcha detected on source; skipping source')
+				return ''
 			}
 			html = await page.evaluate(() => {
 				return document.body.innerHTML
