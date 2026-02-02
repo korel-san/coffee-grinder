@@ -22,6 +22,18 @@ const cooldownMsByStatus = {
 	503: 2 * 60e3,
 	504: 2 * 60e3,
 }
+const captchaCooldownMs = 10 * 60e3
+const captchaPatterns = [
+	/verify you are human/i,
+	/unusual traffic/i,
+	/are you a robot/i,
+	/recaptcha/i,
+	/hcaptcha/i,
+	/attention required/i,
+	/cloudflare/i,
+	/cf-chl/i,
+	/please enable cookies/i,
+]
 
 function getRetryAfterMs(response) {
 	let value = response?.headers?.get?.('retry-after')
@@ -57,6 +69,12 @@ function getHost(url) {
 	} catch {
 		return ''
 	}
+}
+
+function looksLikeCaptcha(text) {
+	if (!text) return false
+	let sample = text.slice(0, 20000)
+	return captchaPatterns.some(pattern => pattern.test(sample))
 }
 
 function setLastStatus(url, status) {
@@ -176,8 +194,15 @@ export async function fetchArticle(url) {
 				headers: defaultHeaders,
 			})
 			if (response.ok) {
+				let text = await response.text()
+				if (looksLikeCaptcha(text)) {
+					log('article fetch blocked by captcha', getHost(url))
+					setLastStatus(url, 'captcha')
+					setDomainCooldown(url, captchaCooldownMs, 'captcha')
+					return
+				}
 				setLastStatus(url, 200)
-				return await response.text()
+				return text
 			}
 			setLastStatus(url, response.status)
 
@@ -202,9 +227,17 @@ export async function fetchArticle(url) {
 
 			log('article fetch failed', response.status, response.statusText)
 		} catch(e) {
-			log('article fetch failed', e)
-			setLastStatus(url, 'error')
-			setDomainCooldown(url, 2 * 60e3, 'error')
+			let message = e?.message || String(e)
+			let isTimeout = e?.name === 'TimeoutError' || message.includes('aborted due to timeout')
+			if (isTimeout) {
+				log('article fetch failed', 'timeout')
+				setLastStatus(url, 'timeout')
+				setDomainCooldown(url, 2 * 60e3, 'timeout')
+			} else {
+				log('article fetch failed', message)
+				setLastStatus(url, 'error')
+				setDomainCooldown(url, 2 * 60e3, 'error')
+			}
 		}
 	}
 	// let response
