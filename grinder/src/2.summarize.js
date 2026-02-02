@@ -965,6 +965,7 @@ export async function summarize() {
 
 		finalyze()
 		log('\n', stats)
+		return stats
 	} catch (error) {
 		if (error?.code === 'BROWSER_CLOSED') {
 			log('[fatal] browser window closed; stopping summarize')
@@ -977,13 +978,30 @@ export async function summarize() {
 
 if (process.argv[1].endsWith('summarize')) {
 	;(async () => {
-		await summarize()
+		let stats = await summarize()
+		if (!stats) return
+		if (!coffeeTodayFolderId) {
+			log('Skipping spreadsheet copy (coffeeTodayFolderId not set)')
+			return
+		}
 		try {
 			log('Copying spreadsheet to coffeeTodayFolder...')
 			await copyFile(spreadsheetId, coffeeTodayFolderId, 'news-today')
 			log('Spreadsheet copied successfully')
 		} catch (e) {
-			log('Failed to copy spreadsheet', e)
+			let status = e?.status || e?.code
+			let reason = e?.errors?.[0]?.reason
+			let message = e?.errors?.[0]?.message || e?.message || ''
+			if (status === 404 || reason === 'notFound') {
+				log('[warn] copy spreadsheet skipped: folder not found or no access')
+				return
+			}
+			let suffix = [
+				status ? `status=${status}` : '',
+				reason ? `reason=${reason}` : '',
+				message ? `msg=${message}` : '',
+			].filter(Boolean).join(' ')
+			log(`[warn] copy spreadsheet failed${suffix ? ` (${suffix})` : ''}`)
 		}
 	})()
 }
