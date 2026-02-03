@@ -22,7 +22,7 @@ const MIN_SIMILARITY_THRESHOLD = 0.8
  */
 function normalizeText(text) {
 	return text.toLowerCase()
-		.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+		.replace(/[.,\/#!$%\^&\*;:{}=\-_'"`~()]/g, "")
 		.replace(/\s{2,}/g, " ")
 		.trim()
 }
