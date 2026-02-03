@@ -6,7 +6,7 @@ import { log } from './log.js'
 import { news } from './store.js'
 import { speak } from './eleven.js'
 import { uploadFolder } from './google-drive.js'
-import { autoArchiveFolderId, audioFolderName } from '../config/google-drive.js'
+import { coffeeTodayFolderId, audioFolderName } from '../config/google-drive.js'
 import { withRetry } from './retry.js'
 import { getPrompt, PROMPTS } from './ai-prompts.js'
 
@@ -41,7 +41,7 @@ async function transcribeAndValidate(filePath, originalText) {
 	// 1. Get transcription with retry for API errors
 	const transcriptionResponse = await withRetry(async () => {
 		return await openrouter.chat.completions.create({
-			model: "google/gemini-2.5-flash-lite",
+			model: "google/gemini-2.0-flash-lite",
 			messages: [
 				{ role: "system", content: transcriptionPrompt },
 				{
@@ -87,7 +87,7 @@ async function transcribeAndValidate(filePath, originalText) {
 	log('Similarity in uncertain range, performing detailed AI validation...')
 	const aiValidationResponse = await withRetry(async () => {
 		return await openrouter.chat.completions.create({
-			model: "google/gemini-2.5-flash-lite",
+			model: "google/gemini-2.0-flash-lite",
 			messages: [
 				{ role: "system", content: validationPrompt },
 				{
@@ -161,7 +161,7 @@ export async function audio() {
 	}
 
 	log('\nUploading audio to Drive...')
-	await uploadFolder('../audio', autoArchiveFolderId, audioFolderName, ['.mp3'])
+	await uploadFolder('../audio', coffeeTodayFolderId, audioFolderName, ['.mp3'])
 	log('Audio uploaded.')
 }
 

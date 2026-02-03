@@ -13,7 +13,8 @@ import {
   templateSlideId,
   templateTableId,
   archiveFolderId,
-  autoArchiveFolderId
+  autoArchiveFolderId,
+  coffeeTodayFolderId
 } from '../config/google-drive.js'
 
 // Режим auto
@@ -111,7 +112,7 @@ export async function createPresentation() {
     log('Creating presentation...\n')
 
     const srcFileIdParam = templatePresentationId
-    const dstFolderIdParam = rootFolderId
+    const dstFolderIdParam = coffeeTodayFolderId
     const dstNameParam = activePresentationName
 
     const copied = await copyFile(srcFileIdParam, dstFolderIdParam, dstNameParam)

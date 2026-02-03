@@ -26,6 +26,7 @@
     "elevenlabs": "^1.50.4",
     "fast-levenshtein": "^3.0.0",
     "google-auth-library": "^9.15.1",
+    "googleapis": "^171.0.0",
     "html-to-text": "^9.0.5",
     "jsdom": "^26.0.0",
     "nanoid": "^5.0.9",
