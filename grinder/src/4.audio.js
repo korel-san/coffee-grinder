@@ -12,7 +12,7 @@ import { getPrompt, PROMPTS } from './ai-prompts.js'
 
 const openai = new OpenAI()
 
-const MAX_VALIDATION_RETRIES = 2
+const MAX_VALIDATION_ATTEMPTS = 2
 const VALIDATION_RETRY_DELAY = 2000
 const HIGH_SIMILARITY_THRESHOLD = 0.96
 const MIN_SIMILARITY_THRESHOLD = 0.8
@@ -148,12 +148,12 @@ export async function audio() {
 			try {
 				await withRetry(
 					generateAndValidate,
-					{ retries: MAX_VALIDATION_RETRIES, delay: VALIDATION_RETRY_DELAY, label: 'Audio Validation Flow' }
+					{ retries: MAX_VALIDATION_ATTEMPTS, delay: VALIDATION_RETRY_DELAY, label: 'Audio Validation Flow' }
 				)
 				log('Audio successfully generated and validated.')
 			} catch (e) {
 				if (e.message === 'VALIDATION_FAILED') {
-					log(`Warning: Audio validation failed after ${MAX_VALIDATION_RETRIES} attempts for "${event.sqk}".`)
+					log(`Warning: Audio validation failed after ${MAX_VALIDATION_ATTEMPTS} attempts for "${event.sqk}".`)
 				} else {
 					log(`Unexpected error in flow for "${event.sqk}":`, e.message)
 				}
