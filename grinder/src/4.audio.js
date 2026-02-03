@@ -10,10 +10,7 @@ import { coffeeTodayFolderId, audioFolderName } from '../config/google-drive.js'
 import { withRetry } from './retry.js'
 import { getPrompt, PROMPTS } from './ai-prompts.js'
 
-const openrouter = new OpenAI({
-	baseURL: "https://openrouter.ai/api/v1",
-	apiKey: process.env.OPENROUTER_API_KEY,
-})
+const openai = new OpenAI()
 
 const MAX_VALIDATION_RETRIES = 2
 const VALIDATION_RETRY_DELAY = 2000
@@ -34,14 +31,15 @@ async function transcribeAndValidate(filePath, originalText) {
 	const transcriptionPrompt = await getPrompt(PROMPTS.AUDIO_TRANSCRIPTION)
 	const validationPrompt = await getPrompt(PROMPTS.TRANSCRIPTION_VALIDATION)
 
-	log('Transcribing audio via OpenRouter...')
+	log('Transcribing audio...')
 	const audioBuffer = readFileSync(filePath)
 	const base64Audio = audioBuffer.toString('base64')
 
 	// 1. Get transcription with retry for API errors
 	const transcriptionResponse = await withRetry(async () => {
-		return await openrouter.chat.completions.create({
-			model: "google/gemini-2.0-flash-lite",
+		return await openai.chat.completions.create({
+			model: "gpt-4o-mini-audio-preview",
+			temperature: 0,
 			messages: [
 				{ role: "system", content: transcriptionPrompt },
 				{
@@ -58,7 +56,7 @@ async function transcribeAndValidate(filePath, originalText) {
 				}
 			]
 		})
-	}, { retries: 2, delay: 3000, label: 'Gemini Transcription API' })
+	}, { retries: 2, delay: 3000, label: 'Transcription API' })
 
 	const transcription = transcriptionResponse.choices[0].message.content
 	log('Transcription received:', transcription.substring(0, 100) + '...')
@@ -86,8 +84,9 @@ async function transcribeAndValidate(filePath, originalText) {
 	// 3. AI detailed validation if similarity is in the uncertain range (MIN to HIGH)
 	log('Similarity in uncertain range, performing detailed AI validation...')
 	const aiValidationResponse = await withRetry(async () => {
-		return await openrouter.chat.completions.create({
-			model: "google/gemini-2.0-flash-lite",
+		return await openai.chat.completions.create({
+			model: "gpt-4o-mini",
+			temperature: 0.25,
 			messages: [
 				{ role: "system", content: validationPrompt },
 				{
@@ -97,7 +96,7 @@ async function transcribeAndValidate(filePath, originalText) {
 			],
 			response_format: { type: "json_object" }
 		})
-	}, { retries: 2, delay: 3000, label: 'Gemini Validation API' })
+	}, { retries: 2, delay: 3000, label: 'Validation API' })
 
 	try {
 		const result = JSON.parse(aiValidationResponse.choices[0].message.content)
@@ -139,7 +138,7 @@ export async function audio() {
 						log('Audio validation failed.')
 						throw e
 					}
-					log(`Validation process failed (OpenRouter/Levenshtein error), skipping: ${e.message}`)
+					log(`Validation process failed, skipping: ${e.message}`)
 				}
 			}
 
