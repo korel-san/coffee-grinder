@@ -26,7 +26,7 @@ const summarySchema = {
 }
 
 export async function ai({ url, text, titleEn, titleRu, source, id, meta }) {
-	await init
+	await instructions
 	for (let i = 0; i < 3; i++) {
 		try {
 			let systemContent = [
