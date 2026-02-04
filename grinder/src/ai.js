@@ -1,24 +1,13 @@
 import OpenAI from 'openai'
 
-import { spreadsheetId } from './store.js'
 import { log } from './log.js'
 import { sleep } from './sleep.js'
-import { load } from './google-sheets.js'
-import { aiSheet } from '../config/google-drive.js'
+import { getPrompt, PROMPTS } from './ai-prompts.js'
 import { logging } from '../config/logging.js'
 import { logFetch } from './fetch-log.js'
 
 let openai = new OpenAI()
-let instructions = ''
-async function initialize() {
-	let rows = await load(spreadsheetId, aiSheet)
-	if (!rows || !rows.length) {
-		log('AI instructions sheet is missing or empty:', aiSheet)
-		rows = [['You are a news summarizer. Return concise results.']]
-	}
-	instructions = rows.map(x => x.join('\t')).join('\n')
-}
-let init = initialize()
+let instructions = getPrompt(PROMPTS.SUMMARIZE)
 
 const summarySchema = {
 	name: 'news_summary',

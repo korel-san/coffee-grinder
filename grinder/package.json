@@ -25,6 +25,7 @@
     "cli-truncate": "^3.1.0",
     "dotenv": "^16.4.7",
     "elevenlabs": "^1.50.4",
+    "fast-levenshtein": "^3.0.0",
     "google-auth-library": "^9.15.1",
     "googleapis": "^171.0.0",
     "html-to-text": "^9.0.5",
