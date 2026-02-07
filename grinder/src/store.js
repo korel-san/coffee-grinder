@@ -3,6 +3,7 @@ import { proxy, subscribe } from 'valtio/vanilla'
 import { log } from './log.js'
 import { loadTable, saveTable, saveRow } from './google-sheets.js'
 import { mainSpreadsheetId, autoSpreadsheetId, newsSheet } from '../config/google-drive.js'
+import { describeError } from './error-guidance.js'
 
 export let spreadsheetMode = process.argv[2]?.endsWith('auto') ? 'auto' : 'main'
 export let spreadsheetId = spreadsheetMode === 'auto' ? autoSpreadsheetId : mainSpreadsheetId
@@ -13,7 +14,23 @@ export let news = []
 // } catch(e) {}
 // news = proxy(news)
 // subscribe(news, () => fs.writeFileSync('news.json', JSON.stringify(news, null, 2)))
-let loaded = await loadTable(spreadsheetId, newsSheet)
+let loaded = []
+try {
+	loaded = await loadTable(spreadsheetId, newsSheet)
+} catch (error) {
+	let guidance = describeError(error, {
+		scope: 'sheets',
+		resource: 'spreadsheet',
+		id: spreadsheetId,
+		email: process.env.SERVICE_ACCOUNT_EMAIL,
+	})
+	let detail = guidance.summary || guidance.message || 'unknown error'
+	let action = guidance.action ? ` | action: ${guidance.action}` : ''
+	log(`[fatal] sheet load failed (sheet=${spreadsheetId} tab=${newsSheet}) ${detail}${action}`)
+	let wrapped = new Error(`Sheet load failed (${detail})${action}`)
+	wrapped.cause = error
+	throw wrapped
+}
 for (let row of loaded) {
 	if (row && typeof row === 'object') {
 		delete row.articles
@@ -47,6 +64,13 @@ function formatSaveError(error) {
 	if (status) parts.push(`status ${status}`)
 	if (reason) parts.push(reason)
 	if (detail && detail !== message) parts.push(detail)
+	let guidance = describeError(error, {
+		scope: 'sheets',
+		resource: 'spreadsheet',
+		id: spreadsheetId,
+		email: process.env.SERVICE_ACCOUNT_EMAIL,
+	})
+	if (guidance.action) parts.push(`action: ${guidance.action}`)
 	return parts.join(' | ')
 }
 
@@ -59,6 +83,13 @@ function formatSaveErrorInline(error) {
 	if (status) parts.push(`status=${status}`)
 	if (reason) parts.push(`reason=${reason}`)
 	if (message) parts.push(`msg=${message}`)
+	let guidance = describeError(error, {
+		scope: 'sheets',
+		resource: 'spreadsheet',
+		id: spreadsheetId,
+		email: process.env.SERVICE_ACCOUNT_EMAIL,
+	})
+	if (guidance.action) parts.push(`action=${guidance.action}`)
 	return parts.join(' ')
 }
 

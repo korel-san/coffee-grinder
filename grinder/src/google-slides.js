@@ -132,6 +132,7 @@ export async function addSlide(event) {
   const newTableId = 't' + nanoid()
 
   const title = `${event.titleEn || event.titleRu || ''}`
+  const hasTitle = title.trim().length > 0
 
   // Замены текста
   const replaceMap = {
@@ -143,6 +144,7 @@ export async function addSlide(event) {
   }
 
   const linkUrl = event.directUrl || event.url || ''
+  const shouldLinkTitle = Boolean(linkUrl && hasTitle)
 
   // Важно:
   // 1) СНАЧАЛА duplicateObject с маппингом templateTableId -> newTableId
@@ -172,8 +174,11 @@ export async function addSlide(event) {
         replaceText: String(`${event.sqk ?? ''} ${title}`),
         // Без pageObjectIds: обновляет общий “каталог/оглавление”, если он есть в презентации
       }
-    },
-    {
+    }
+  ]
+
+  if (shouldLinkTitle) {
+    requests.push({
       updateTextStyle: {
         fields: 'link',
         objectId: newTableId,
@@ -193,15 +198,16 @@ export async function addSlide(event) {
           }
         }
       }
-    },
-    {
-      updateSlidesPosition: {
-        slideObjectIds: [newSlideId],
-        // insertionIndex должен быть int >= 0
-        insertionIndex: Math.max(0, Number(event.sqk ?? 0) + 1)
-      }
+    })
+  }
+
+  requests.push({
+    updateSlidesPosition: {
+      slideObjectIds: [newSlideId],
+      // insertionIndex должен быть int >= 0
+      insertionIndex: Math.max(0, Number(event.sqk ?? 0) + 1)
     }
-  ]
+  })
 
   // Ретраи с backoff на 429
   const maxAttempts = 6

@@ -3,6 +3,7 @@ import Sheets from '@googleapis/sheets'
 import { log } from './log.js'
 import { auth } from './google-auth.js'
 import { sheetsConfig } from '../config/sheets.js'
+import { describeError } from './error-guidance.js'
 
 let sheets
 async function initialize() {
@@ -10,20 +11,58 @@ async function initialize() {
 }
 let init = initialize()
 
+function wrapSheetsError(error, { op, spreadsheetId, range, sheet } = {}) {
+	if (error?._isSheetsError) return error
+	let guidance = describeError(error, {
+		scope: 'sheets',
+		resource: 'spreadsheet',
+		id: spreadsheetId,
+		email: process.env.SERVICE_ACCOUNT_EMAIL,
+	})
+	let detail = guidance.summary || guidance.message || error?.message || 'unknown error'
+	let action = guidance.action ? ` action: ${guidance.action}` : ''
+	let contextParts = []
+	if (spreadsheetId) contextParts.push(`sheet=${spreadsheetId}`)
+	if (sheet) contextParts.push(`tab=${sheet}`)
+	if (range) contextParts.push(`range=${range}`)
+	let context = contextParts.length ? ` (${contextParts.join(' ')})` : ''
+	let wrapped = new Error(`Sheets ${op || 'request'} failed${context}: ${detail}${action}`)
+	wrapped.cause = error
+	wrapped.details = {
+		op,
+		spreadsheetId,
+		sheet,
+		range,
+		status: guidance.status,
+		reason: guidance.reason,
+		action: guidance.action,
+	}
+	wrapped._isSheetsError = true
+	return wrapped
+}
+
 export async function load(spreadsheetId, range) {
 	await init
-	const res = await sheets.values.get({ spreadsheetId, range })
-	return res.data.values
+	try {
+		const res = await sheets.values.get({ spreadsheetId, range })
+		return res.data.values
+	} catch (error) {
+		throw wrapSheetsError(error, { op: 'load', spreadsheetId, range })
+	}
 }
 
 export async function save(spreadsheetId, range, data) {
-	return await sheets.values.update({
-		spreadsheetId,
-		range,
-		// valueInputOption: 'RAW',
-		valueInputOption: 'USER_ENTERED',
-		requestBody: { values: data },
-	})
+	try {
+		return await sheets.values.update({
+			spreadsheetId,
+			range,
+			// valueInputOption: 'RAW',
+			valueInputOption: 'USER_ENTERED',
+			requestBody: { values: data },
+		})
+	} catch (error) {
+		throw wrapSheetsError(error, { op: 'save', spreadsheetId, range })
+	}
 }
 
 function columnToLetter(index) {
@@ -96,12 +135,16 @@ export async function saveRow(spreadsheetId, sheet, headers, rowNumber, row) {
 	}
 	const lastColumn = columnToLetter(Math.max(0, headers.length - 1))
 	const range = `${sheet}!A${rowNumber}:${lastColumn}${rowNumber}`
-	return await sheets.values.update({
-		spreadsheetId,
-		range,
-		valueInputOption: 'USER_ENTERED',
-		requestBody: { values: [values] },
-	})
+	try {
+		return await sheets.values.update({
+			spreadsheetId,
+			range,
+			valueInputOption: 'USER_ENTERED',
+			requestBody: { values: [values] },
+		})
+	} catch (error) {
+		throw wrapSheetsError(error, { op: 'saveRow', spreadsheetId, sheet, range })
+	}
 }
 
 export async function saveTable(spreadsheetId, range, data) {
@@ -150,5 +193,9 @@ export async function saveTable(spreadsheetId, range, data) {
 		}
 	}
 	// log({ updatedData })
-	return await save(spreadsheetId, range, updatedData)
+	try {
+		return await save(spreadsheetId, range, updatedData)
+	} catch (error) {
+		throw wrapSheetsError(error, { op: 'saveTable', spreadsheetId, range })
+	}
 }
