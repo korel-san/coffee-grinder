@@ -86,6 +86,22 @@ Common values:
 - `GOOGLE_SHEET_ID_MAIN`, `GOOGLE_SHEET_ID_AUTO` (override defaults)
 - `SEARCH_API_KEY` (external search providers)
 - OpenAI and ElevenLabs API keys as required by their SDKs
+Additional summarize logging:
+- `SUMMARIZE_LOG_FILE` (default `logs/summarize.log`)
+- `SUMMARIZE_CONSOLE_LOG_LEVEL` (`long` or `short`, default `short`)
+- `SUMMARIZE_LOG_LONG=1` or `--log-long` (verbose console output)
+- `SUMMARIZE_HASH_LEN` (short hash length in console, default `8`)
+Search query logging:
+- Logs include `reason=title|url_terms|unknown` to show why a query was chosen.
+
+## Logging (summarize)
+`summarize.log` is JSONL with both short and detail lines per event.
+Console output is short by default; enable long output with a flag or env var.
+
+Long console output:
+```sh
+SUMMARIZE_CONSOLE_LOG_LEVEL=long npm run summarize
+```
 
 ## Search engines
 The pipeline uses two sources:
