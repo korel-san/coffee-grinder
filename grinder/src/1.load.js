@@ -12,22 +12,12 @@ function parse(xml) {
 	// log('Parsing', xml.length, 'bytes...')
 	let feed = JSON.parse(xml2json(xml, { compact: true }))
 	let items = feed?.rss?.channel?.item?.map(event => {
-		let articles = []
-		try {
-			let json = xml2json(event.description?._text, { compact: true })
-			articles = JSON.parse(json).ol.li.map(({ a, font }) => ({
-				titleEn: a._text,
-				gnUrl: a._attributes.href,
-				source: font._text,
-			}))
-		} catch(e) {}
 		if (!event.pubDate?._text) return null
 		return {
 			titleEn: event.title?._text, // .replace(` - ${event.source?._text}`, ''),
 			gnUrl: event.link?._text,
 			source: event.source?._text,
 			date: new Date(event.pubDate._text),
-			articles,
 		}
 	}).filter(Boolean)
 	return items || []
@@ -55,7 +45,7 @@ function intersect(target, source) {
 	}
 	source.forEach(e => {
 		seen(e)
-		e.articles.forEach(seen)
+		if (Array.isArray(e.articles)) e.articles.forEach(seen)
 	})
 	target.forEach(event => {
 		if (!index[event.titleEn] && !index[event.gnUrl]) {

@@ -8,11 +8,19 @@ import {
 	verifyReasoningEffort,
 	verifyFallbackMaxChars,
 	verifyFallbackContextMaxChars,
+	verifyProvider,
+	verifyFallbackProvider,
+	verifyFallbackModel,
+	verifyFallbackUseSearch,
 } from '../config/verification.js'
 import { log } from './log.js'
 
 const OPENAI_API_URL = process.env.OPENAI_API_URL || 'https://api.openai.com/v1/responses'
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
+const XAI_RESPONSES_URL = process.env.XAI_API_URL || 'https://api.x.ai/v1/responses'
+const XAI_CHAT_URL = process.env.XAI_CHAT_URL || 'https://api.x.ai/v1/chat/completions'
+const XAI_API_KEY = process.env.XAI_API_KEY || ''
+const promptFieldMaxChars = 100
 
 const verifySchema = {
 	type: 'json_schema',
@@ -53,6 +61,15 @@ function clampText(text, limit) {
 	return text.length > limit ? text.slice(0, limit) : text
 }
 
+function clampMetaField(text) {
+	return clampText(text, promptFieldMaxChars)
+}
+
+function clampContentField(text, limitOverride) {
+	if (!Number.isFinite(limitOverride) || limitOverride <= 0) return text || ''
+	return clampText(text, limitOverride)
+}
+
 function isLengthError(error) {
 	let message = String(error?.message || error || '').toLowerCase()
 	return message.includes('context')
@@ -66,18 +83,24 @@ function isLengthError(error) {
 function buildPayload(original, candidate, { maxChars, contextMaxChars }) {
 	return {
 		original: {
-			title: original?.title || '',
-			description: original?.description || '',
-			keywords: original?.keywords || '',
-			date: original?.date || '',
-			source: original?.source || '',
-			url: original?.url || '',
-			gnUrl: original?.gnUrl || '',
-			textSnippet: clampText(original?.textSnippet || '', contextMaxChars),
+			title: clampMetaField(original?.title || ''),
+			description: clampMetaField(original?.description || ''),
+			keywords: clampMetaField(original?.keywords || ''),
+			date: clampMetaField(original?.date || ''),
+			source: clampMetaField(original?.source || ''),
+			url: clampMetaField(original?.url || ''),
+			gnUrl: clampMetaField(original?.gnUrl || ''),
 		},
 		candidate: {
-			url: candidate?.url || '',
-			text: clampText(candidate?.text || '', maxChars),
+			title: clampMetaField(candidate?.title || ''),
+			description: clampMetaField(candidate?.description || ''),
+			keywords: clampMetaField(candidate?.keywords || ''),
+			date: clampMetaField(candidate?.date || ''),
+			source: clampMetaField(candidate?.source || ''),
+			url: clampMetaField(candidate?.url || ''),
+			gnUrl: clampMetaField(candidate?.gnUrl || ''),
+			textSnippet: clampContentField(candidate?.textSnippet || '', contextMaxChars),
+			text: clampContentField(candidate?.text || '', maxChars),
 		},
 	}
 }
@@ -88,7 +111,10 @@ function buildPrompt(payload) {
 		'Be strict: only mark match=true if it is clearly the same event.',
 		'The candidate may contain MORE information, but must NOT contradict the original.',
 		'If the candidate omits key facts from the original or is about a related but different event, set match=false.',
+		'Use the candidate body text as primary evidence; do NOT rely only on the title.',
+		'Ignore site chrome, navigation, ads, and boilerplate in the candidate text.',
 		'Use web_search to confirm details when needed.',
+		'Candidate context may include title, description, keywords, date, source, and url.',
 		'Dates and sources may differ slightly, but the event must be the same.',
 		'Return ONLY JSON with keys:',
 		'- match (boolean)',
@@ -123,22 +149,24 @@ function extractResponseText(response) {
 	return typeof fallback === 'string' ? fallback : ''
 }
 
-async function callOpenAI({ system, prompt, temperature, useSearch }) {
+async function callOpenAI({ system, prompt, temperature, useSearch, model, reasoningEffort }) {
 	if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set')
-	let supportsTemperature = !/^gpt-5/i.test(verifyModel || '')
-	if (/^gpt-5\.1/i.test(verifyModel || '') && verifyReasoningEffort === 'none') {
+	let modelName = model || verifyModel
+	let effort = reasoningEffort ?? verifyReasoningEffort
+	let supportsTemperature = !/^gpt-5/i.test(modelName || '')
+	if (/^gpt-5\.1/i.test(modelName || '') && effort === 'none') {
 		supportsTemperature = true
 	}
 	let body = {
-		model: verifyModel,
+		model: modelName,
 		input: [
 			{ role: 'system', content: [{ type: 'input_text', text: system }] },
 			{ role: 'user', content: [{ type: 'input_text', text: prompt }] },
 		],
 		text: { format: verifySchema },
 	}
-	if (verifyReasoningEffort) {
-		body.reasoning = { effort: verifyReasoningEffort }
+	if (effort) {
+		body.reasoning = { effort }
 	}
 	if (supportsTemperature && Number.isFinite(temperature)) body.temperature = temperature
 	if (useSearch) body.tools = [{ type: 'web_search' }]
@@ -158,6 +186,155 @@ async function callOpenAI({ system, prompt, temperature, useSearch }) {
 	return data
 }
 
+async function callXAI({ system, prompt, temperature, useSearch, model }) {
+	if (!XAI_API_KEY) throw new Error('XAI_API_KEY is not set')
+	let modelName = model || verifyModel
+	let baseResponses = {
+		model: modelName,
+		input: [
+			{ role: 'system', content: [{ type: 'input_text', text: system }] },
+			{ role: 'user', content: [{ type: 'input_text', text: prompt }] },
+		],
+	}
+	let baseChat = {
+		model: modelName,
+		messages: [
+			{ role: 'system', content: system },
+			{ role: 'user', content: prompt },
+		],
+	}
+	if (Number.isFinite(temperature)) {
+		baseResponses.temperature = temperature
+		baseChat.temperature = temperature
+	}
+	let toolVariants = useSearch
+		? [
+			[{ type: 'web_search' }],
+			[{ type: 'x_search' }],
+			[{ type: 'web_search' }, { type: 'x_search' }],
+		]
+		: [[]]
+	let attempts = []
+	let noToolAttempts = []
+	let addAttempt = (label, url, body) => {
+		if (!url) return
+		attempts.push({ label, url, body })
+	}
+	let addNoToolAttempt = (label, url, body) => {
+		if (!url) return
+		noToolAttempts.push({ label, url, body })
+	}
+	for (let tools of toolVariants) {
+		let toolsLabel = tools.length ? `tools=${tools[0].type}` : 'no-tools'
+		let bodyWithTools = { ...baseResponses }
+		if (tools.length) bodyWithTools.tools = tools
+		addAttempt(`responses+schema+${toolsLabel}`, XAI_RESPONSES_URL, {
+			...bodyWithTools,
+			text: { format: verifySchema },
+		})
+		addAttempt(`responses+raw+${toolsLabel}`, XAI_RESPONSES_URL, {
+			...bodyWithTools,
+		})
+	}
+	for (let tools of toolVariants) {
+		let toolsLabel = tools.length ? `tools=${tools[0].type}` : 'no-tools'
+		let bodyWithTools = { ...baseChat }
+		if (tools.length) bodyWithTools.tools = tools
+		addAttempt(`chat+schema+${toolsLabel}`, XAI_CHAT_URL, {
+			...bodyWithTools,
+			response_format: {
+				type: 'json_schema',
+				json_schema: {
+					name: verifySchema.name || 'verify_result',
+					schema: verifySchema.schema || {},
+					strict: verifySchema.strict === true,
+				},
+			},
+		})
+		addAttempt(`chat+raw+${toolsLabel}`, XAI_CHAT_URL, {
+			...bodyWithTools,
+		})
+	}
+	if (useSearch) {
+		let bodyResponses = { ...baseResponses }
+		let bodyChat = { ...baseChat }
+		addNoToolAttempt('responses+schema+no-tools', XAI_RESPONSES_URL, {
+			...bodyResponses,
+			text: { format: verifySchema },
+		})
+		addNoToolAttempt('responses+raw+no-tools', XAI_RESPONSES_URL, {
+			...bodyResponses,
+		})
+		addNoToolAttempt('chat+schema+no-tools', XAI_CHAT_URL, {
+			...bodyChat,
+			response_format: {
+				type: 'json_schema',
+				json_schema: {
+					name: verifySchema.name || 'verify_result',
+					schema: verifySchema.schema || {},
+					strict: verifySchema.strict === true,
+				},
+			},
+		})
+		addNoToolAttempt('chat+raw+no-tools', XAI_CHAT_URL, {
+			...bodyChat,
+		})
+	}
+	let lastError = null
+	for (let attempt of attempts) {
+		try {
+			let response = await fetch(attempt.url, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${XAI_API_KEY}`,
+				},
+				body: JSON.stringify(attempt.body),
+			})
+			let data = await response.json().catch(() => ({}))
+			if (response.ok) return data
+			let message = data?.error?.message || data?.message || response.statusText
+			let status = response.status
+			if (status === 401 || status === 403) {
+				throw new Error(`xAI API error: ${message}`)
+			}
+			let suffix = ` (attempt=${attempt.label} status=${status})`
+			lastError = new Error(`xAI API error: ${message}${suffix}`)
+		} catch (error) {
+			lastError = error
+		}
+	}
+	if (useSearch && noToolAttempts.length) {
+		for (let attempt of noToolAttempts) {
+			try {
+				let response = await fetch(attempt.url, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Authorization': `Bearer ${XAI_API_KEY}`,
+					},
+					body: JSON.stringify(attempt.body),
+				})
+				let data = await response.json().catch(() => ({}))
+				if (response.ok) {
+					throw new Error('xAI API error: live search unavailable for this model/account; disable VERIFY_USE_SEARCH or enable search access.')
+				}
+				let message = data?.error?.message || data?.message || response.statusText
+				let status = response.status
+				if (status === 401 || status === 403) {
+					throw new Error(`xAI API error: ${message}`)
+				}
+				let suffix = ` (attempt=${attempt.label} status=${status})`
+				lastError = new Error(`xAI API error: ${message}${suffix}`)
+			} catch (error) {
+				lastError = error
+			}
+		}
+	}
+	if (lastError) throw lastError
+	throw new Error('xAI API error: request failed')
+}
+
 export async function verifyArticle({
 	original,
 	candidate,
@@ -174,38 +351,117 @@ export async function verifyArticle({
 		let { system, user } = buildPrompt(payload)
 		let debugSystem = ''
 		let debugUser = ''
-		if (debug) {
-			debugSystem = clampText(system, debugMaxChars)
-			debugUser = clampText(user, debugMaxChars)
-		}
-
 		let completion
 		let fallbackUsed = false
-		try {
-			completion = await callOpenAI({
-				system,
-				prompt: user,
-				temperature: verifyTemperature,
-				useSearch: verifyUseSearch,
-			})
-		} catch (error) {
-			if (!isLengthError(error)) throw error
-			fallbackUsed = true
-			let fallbackPayload = buildPayload(original, candidate, {
-				maxChars: verifyFallbackMaxChars,
-				contextMaxChars: verifyFallbackContextMaxChars,
-			})
-			let fallbackPrompt = buildPrompt(fallbackPayload)
+		let providerFallbackUsed = false
+		let providerUsed = verifyProvider
+		let modelUsed = verifyModel
+		let useSearchUsed = verifyUseSearch
+		const runProvider = async ({ provider, model, useSearch }) => {
+			let localSystem = system
+			let localUser = user
+			let localDebugSystem = ''
+			let localDebugUser = ''
 			if (debug) {
-				debugSystem = clampText(fallbackPrompt.system, debugMaxChars)
-				debugUser = clampText(fallbackPrompt.user, debugMaxChars)
+				localDebugSystem = clampText(localSystem, debugMaxChars)
+				localDebugUser = clampText(localUser, debugMaxChars)
 			}
-			completion = await callOpenAI({
-				system: fallbackPrompt.system,
-				prompt: fallbackPrompt.user,
-				temperature: verifyTemperature,
+			try {
+				if (provider === 'xai') {
+					return {
+						completion: await callXAI({
+							system: localSystem,
+							prompt: localUser,
+							temperature: verifyTemperature,
+							useSearch,
+							model,
+						}),
+						debugSystem: localDebugSystem,
+						debugUser: localDebugUser,
+						lengthFallbackUsed: false,
+					}
+				}
+				return {
+					completion: await callOpenAI({
+						system: localSystem,
+						prompt: localUser,
+						temperature: verifyTemperature,
+						useSearch,
+						model,
+						reasoningEffort: verifyReasoningEffort,
+					}),
+					debugSystem: localDebugSystem,
+					debugUser: localDebugUser,
+					lengthFallbackUsed: false,
+				}
+			} catch (error) {
+				if (!isLengthError(error)) throw error
+				let fallbackPayload = buildPayload(original, candidate, {
+					maxChars: verifyFallbackMaxChars,
+					contextMaxChars: verifyFallbackContextMaxChars,
+				})
+				let fallbackPrompt = buildPrompt(fallbackPayload)
+				localSystem = fallbackPrompt.system
+				localUser = fallbackPrompt.user
+				if (debug) {
+					localDebugSystem = clampText(localSystem, debugMaxChars)
+					localDebugUser = clampText(localUser, debugMaxChars)
+				}
+				if (provider === 'xai') {
+					return {
+						completion: await callXAI({
+							system: localSystem,
+							prompt: localUser,
+							temperature: verifyTemperature,
+							useSearch,
+							model,
+						}),
+						debugSystem: localDebugSystem,
+						debugUser: localDebugUser,
+						lengthFallbackUsed: true,
+					}
+				}
+				return {
+					completion: await callOpenAI({
+						system: localSystem,
+						prompt: localUser,
+						temperature: verifyTemperature,
+						useSearch,
+						model,
+						reasoningEffort: verifyReasoningEffort,
+					}),
+					debugSystem: localDebugSystem,
+					debugUser: localDebugUser,
+					lengthFallbackUsed: true,
+				}
+			}
+		}
+
+		try {
+			let primary = await runProvider({
+				provider: verifyProvider,
+				model: verifyModel,
 				useSearch: verifyUseSearch,
 			})
+			completion = primary.completion
+			debugSystem = primary.debugSystem
+			debugUser = primary.debugUser
+			fallbackUsed = primary.lengthFallbackUsed
+		} catch (error) {
+			if (verifyProvider !== 'xai' || verifyFallbackProvider !== 'openai') throw error
+			let fallback = await runProvider({
+				provider: 'openai',
+				model: verifyFallbackModel,
+				useSearch: verifyFallbackUseSearch,
+			})
+			completion = fallback.completion
+			debugSystem = fallback.debugSystem
+			debugUser = fallback.debugUser
+			fallbackUsed = fallback.lengthFallbackUsed
+			providerFallbackUsed = true
+			providerUsed = 'openai'
+			modelUsed = verifyFallbackModel
+			useSearchUsed = verifyFallbackUseSearch
 		}
 		let content = extractResponseText(completion)
 		let jsonText = cleanJsonText(content)
@@ -223,15 +479,20 @@ export async function verifyArticle({
 			pageSummary,
 			verified: true,
 			status: ok ? 'ok' : 'mismatch',
-			model: verifyModel,
-			useSearch: verifyUseSearch,
-			tokens: completion?.usage?.total_tokens ?? completion?.usage?.totalTokens,
+			model: modelUsed,
+			useSearch: useSearchUsed,
+			provider: providerUsed,
+			tokens: completion?.usage?.total_tokens
+				?? completion?.usage?.totalTokens
+				?? completion?.usage?.total,
 			debug: debug
 				? {
-					model: verifyModel,
+					model: modelUsed,
 					temperature: verifyTemperature,
-					useSearch: verifyUseSearch,
+					useSearch: useSearchUsed,
 					fallbackUsed,
+					provider: providerUsed,
+					providerFallbackUsed,
 					fallbackMaxChars: verifyFallbackMaxChars,
 					fallbackContextMaxChars: verifyFallbackContextMaxChars,
 					system: debugSystem,
@@ -239,6 +500,7 @@ export async function verifyArticle({
 				}
 				: undefined,
 			fallbackUsed,
+			providerFallbackUsed,
 		}
 	} catch (error) {
 		log('verify failed', error)

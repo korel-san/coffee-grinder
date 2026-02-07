@@ -92,16 +92,27 @@ export function extractSearchTermsFromUrl(url) {
 	if (!url) return ''
 	try {
 		let parsed = new URL(url)
-		let slug = parsed.pathname.split('/').filter(Boolean).pop() || ''
-		if (!slug) return ''
-		if (slug.includes('newsml_')) {
-			let idx = slug.lastIndexOf(':0-')
-			if (idx !== -1) slug = slug.slice(idx + 3)
-			slug = slug.replace(/newsml_[^:-]+[:\d-]*/gi, '')
+		let segments = parsed.pathname.split('/').filter(Boolean)
+		if (!segments.length) return ''
+		let cleanSegment = segment => {
+			if (!segment) return ''
+			let slug = segment.replace(/\.(html?|php|aspx?)$/i, '')
+			if (slug.includes('newsml_')) {
+				let idx = slug.lastIndexOf(':0-')
+				if (idx !== -1) slug = slug.slice(idx + 3)
+				slug = slug.replace(/newsml_[^:-]+[:\d-]*/gi, '')
+			}
+			slug = slug.replace(/^[^a-z0-9]+/i, '')
+			return slug
 		}
-		slug = slug.replace(/^[^a-z0-9]+/i, '')
-		let terms = slug.replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim()
-		return terms
+		for (let i = segments.length - 1; i >= 0; i--) {
+			let slug = cleanSegment(segments[i])
+			if (!slug) continue
+			if (!/\p{L}/u.test(slug)) continue
+			let terms = slug.replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim()
+			if (terms) return terms
+		}
+		return ''
 	} catch {
 		return ''
 	}
@@ -112,8 +123,6 @@ export function isBlank(value) {
 }
 
 export const requiredFields = [
-	'url',
-	'source',
 	'titleEn',
 	'titleRu',
 	'summary',
@@ -122,11 +131,7 @@ export const requiredFields = [
 ]
 
 export function missingFields(event) {
-	let missing = requiredFields.filter(field => isBlank(event?.[field]))
-	if (isBlank(event?.gnUrl) && isBlank(event?.alternativeUrl)) {
-		missing.push('gnUrl/alternativeUrl')
-	}
-	return missing
+	return requiredFields.filter(field => isBlank(event?.[field]))
 }
 
 export function isComplete(event) {

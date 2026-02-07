@@ -74,6 +74,13 @@ function getHost(url) {
 function looksLikeCaptcha(text) {
 	if (!text) return false
 	let sample = text.slice(0, 20000)
+	let stripped = sample
+		.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+		.replace(/<style[\s\S]*?<\/style>/gi, ' ')
+		.replace(/<[^>]+>/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+	if (stripped.length > 1200) return false
 	return captchaPatterns.some(pattern => pattern.test(sample))
 }
 
@@ -111,24 +118,6 @@ async function tryFetchWithStatus(url, label) {
 	}
 }
 
-async function tryFetch(url, label) {
-	try {
-		let response = await fetch(url, {
-			signal: AbortSignal.timeout(10e3),
-			headers: defaultHeaders,
-		})
-		if (!response.ok) {
-			if (label) log('article alt fetch failed', label, response.status, response.statusText)
-			return
-		}
-		let text = await response.text()
-		if (label && logAlt) log('article alt fetch ok', label, response.status, text.length)
-		return text
-	} catch (e) {
-		if (label) log('article alt fetch failed', label, e?.message || e)
-	}
-}
-
 async function tryFetchJson(url, label) {
 	try {
 		let response = await fetch(url, {
@@ -154,47 +143,77 @@ async function tryWayback(url) {
 	let meta = await tryFetchJson(`https://archive.org/wayback/available?url=${encodeURIComponent(url)}`, 'wayback-meta')
 	let snapshot = meta?.archived_snapshots?.closest?.url
 	if (!snapshot) {
-		log('wayback no snapshot')
-		return
+		log('wayback no snapshot (archive.org has no saved copy for this URL)')
+		return { ok: false, reason: 'no_snapshot', reasonDetail: 'archive.org has no saved copy for this URL' }
 	}
-	let text = await tryFetch(snapshot, 'wayback')
-	if (text) return text
-	return await tryFetch(buildJinaUrl(snapshot), 'wayback-jina')
+	let primary = await tryFetchWithStatus(snapshot, 'wayback')
+	if (primary?.ok && primary.text) return { ok: true, text: primary.text, source: 'wayback', status: primary.status }
+	let fallback = await tryFetchWithStatus(buildJinaUrl(snapshot), 'wayback-jina')
+	if (fallback?.ok && fallback.text) return { ok: true, text: fallback.text, source: 'wayback-jina', status: fallback.status }
+	return { ok: false, status: primary?.status || fallback?.status || null, reason: 'no_text' }
 }
 
 async function tryArchives(url) {
 	if (Date.now() < archiveCooldownUntil) {
 		log('archive cooldown active', Math.ceil((archiveCooldownUntil - Date.now()) / 1000), 's')
-		return
+		return { ok: false, skipped: true, reason: 'cooldown' }
 	}
+	let lastFailure = {}
 	for (let archiveUrl of buildArchiveUrls(url)) {
 		let wait = archiveDelayMs - (Date.now() - lastArchiveAttempt)
 		if (wait > 0) await sleep(wait)
 		lastArchiveAttempt = Date.now()
 		let result = await tryFetchWithStatus(archiveUrl, `archive:${new URL(archiveUrl).hostname}`)
-		if (result?.ok && result.text) return result.text
+		if (result?.ok && result.text) {
+			return {
+				ok: true,
+				text: result.text,
+				status: result.status,
+				host: new URL(archiveUrl).hostname,
+			}
+		}
+		lastFailure = {
+			status: result?.status || null,
+			statusText: result?.statusText || '',
+			host: new URL(archiveUrl).hostname,
+		}
 		if (result?.status === 429) {
 			archiveCooldownUntil = Date.now() + archiveCooldownMs
 			log('archive cooldown set', Math.ceil(archiveCooldownMs / 1000), 's')
-			break
+			return {
+				ok: false,
+				status: result.status,
+				host: new URL(archiveUrl).hostname,
+				reason: 'rate_limit',
+			}
 		}
 	}
+	return { ok: false, ...lastFailure }
 }
 
-export async function fetchArticle(url, { onMethod } = {}) {
+export async function fetchArticle(url, { onMethod, onStep } = {}) {
 	let cooldown = isDomainInCooldown(url)
 	if (cooldown) {
 		log('domain cooldown active', cooldown.host, Math.ceil(cooldown.remainingMs / 1000), 's')
+		if (onStep) {
+			onStep('fetch', 'skipped', { reason: 'cooldown', host: cooldown.host })
+		}
 		return
+	}
+	const emitStep = (step, status, info = {}) => {
+		if (onStep) onStep(step, status, info)
 	}
 	for (let i = 0; i < 2; i++) {
 		try {
+			let fetchStart = Date.now()
+			emitStep('fetch', 'start', { attempt: i + 1 })
 			let response = await fetch(url, {
 				signal: AbortSignal.timeout(10e3),
 				headers: defaultHeaders,
 			})
 			if (response.ok) {
 				let text = await response.text()
+				emitStep('fetch', 'ok', { status: response.status, bytes: text.length, ms: Date.now() - fetchStart })
 				if (looksLikeCaptcha(text)) {
 					log('article fetch blocked by captcha', getHost(url))
 					setLastStatus(url, 'captcha')
@@ -206,6 +225,7 @@ export async function fetchArticle(url, { onMethod } = {}) {
 				if (onMethod) onMethod('fetch')
 				return text
 			}
+			emitStep('fetch', 'fail', { status: response.status, statusText: response.statusText, ms: Date.now() - fetchStart })
 			setLastStatus(url, response.status)
 
 			let retryAfter = getRetryAfterMs(response)
@@ -219,28 +239,63 @@ export async function fetchArticle(url, { onMethod } = {}) {
 			}
 
 			if ([401, 403, 429].includes(response.status)) {
-				let altText = await tryFetch(buildJinaUrl(url), 'jina')
-				if (altText) {
+				let jinaStart = Date.now()
+				emitStep('jina', 'start', {})
+				let jinaRes = await tryFetchWithStatus(buildJinaUrl(url), 'jina')
+				if (jinaRes?.ok && jinaRes.text) {
 					setLastStatus(url, 'jina')
 					if (onMethod) onMethod('jina')
-					return altText
+					emitStep('jina', 'ok', { status: jinaRes.status, bytes: jinaRes.text.length, ms: Date.now() - jinaStart })
+					return jinaRes.text
 				}
-				altText = await tryArchives(url)
-				if (altText) return altText
-				altText = await tryWayback(url)
-				if (altText) return altText
+				emitStep('jina', 'fail', { status: jinaRes?.status || null, ms: Date.now() - jinaStart })
+
+				let archiveStart = Date.now()
+				emitStep('archive', 'start', {})
+				let archiveRes = await tryArchives(url)
+				if (archiveRes?.ok && archiveRes.text) {
+					emitStep('archive', 'ok', { status: archiveRes.status, host: archiveRes.host, bytes: archiveRes.text.length, ms: Date.now() - archiveStart })
+					if (onMethod) onMethod('archive')
+					return archiveRes.text
+				}
+				if (archiveRes?.skipped) {
+					emitStep('archive', 'skipped', { reason: archiveRes.reason || '', ms: Date.now() - archiveStart })
+				} else {
+					emitStep('archive', 'fail', { status: archiveRes?.status || null, host: archiveRes?.host || '', ms: Date.now() - archiveStart })
+				}
+
+				let waybackStart = Date.now()
+				emitStep('wayback', 'start', {})
+				let waybackRes = await tryWayback(url)
+				if (waybackRes?.ok && waybackRes.text) {
+					emitStep('wayback', 'ok', { status: waybackRes.status || null, source: waybackRes.source || '', bytes: waybackRes.text.length, ms: Date.now() - waybackStart })
+					if (onMethod) onMethod('wayback')
+					return waybackRes.text
+				}
+				let reason = waybackRes?.reason || ''
+				if (reason === 'no_snapshot') {
+					reason = 'no_snapshot (archive.org has no saved copy for this URL)'
+				}
+				emitStep('wayback', 'fail', { status: waybackRes?.status || null, reason, ms: Date.now() - waybackStart })
+			} else {
+				emitStep('jina', 'skipped', { reason: `status_${response.status}` })
+				emitStep('archive', 'skipped', { reason: `status_${response.status}` })
+				emitStep('wayback', 'skipped', { reason: `status_${response.status}` })
 			}
 
 			log('article fetch failed', response.status, response.statusText)
+			if (response.status === 401 || response.status === 403) break
 		} catch(e) {
 			let message = e?.message || String(e)
 			let isTimeout = e?.name === 'TimeoutError' || message.includes('aborted due to timeout')
 			if (isTimeout) {
+				emitStep('fetch', 'timeout', {})
 				log('article fetch failed', 'timeout')
 				setLastStatus(url, 'timeout')
 				setDomainCooldown(url, 2 * 60e3, 'timeout')
 				if (onMethod) onMethod('timeout')
 			} else {
+				emitStep('fetch', 'error', { error: message })
 				log('article fetch failed', message)
 				setLastStatus(url, 'error')
 				setDomainCooldown(url, 2 * 60e3, 'error')

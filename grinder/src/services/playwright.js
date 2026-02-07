@@ -118,6 +118,27 @@ export async function getMeta(options = {}) {
 			let href = node?.getAttribute('href') || ''
 			return href.trim()
 		}
+		let normalizeLdValue = (value, keys = []) => {
+			if (!value) return ''
+			if (typeof value === 'string') return value.trim()
+			if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+			if (Array.isArray(value)) {
+				let items = value.map(item => normalizeLdValue(item, keys)).filter(Boolean)
+				return items.join(', ')
+			}
+			if (typeof value === 'object') {
+				for (let key of keys) {
+					let candidate = value?.[key]
+					if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+				}
+				let id = value?.['@id'] || value?.id
+				if (typeof id === 'string' && id.trim()) return id.trim()
+				let url = value?.url || value?.contentUrl || value?.src || value?.href
+				if (typeof url === 'string' && url.trim()) return url.trim()
+				if (typeof url === 'object') return normalizeLdValue(url, keys)
+			}
+			return ''
+		}
 		let readLdJson = () => {
 			let scripts = [...document.querySelectorAll('script[type=\"application/ld+json\"]')]
 			if (!scripts.length) return {}
@@ -132,15 +153,15 @@ export async function getMeta(options = {}) {
 				let description = node.description
 				let keywords = node.keywords
 				let datePublished = node.datePublished || node.dateCreated || node.dateModified
-				let author = node.author?.name || node.author
-				let image = node.image?.url || node.image
+				let author = normalizeLdValue(node.author, ['name'])
+				let image = normalizeLdValue(node.image, ['url', 'contentUrl'])
 				let mainEntity = node.mainEntityOfPage
 				if (headline && !result.title) result.title = String(headline).trim()
 				if (description && !result.description) result.description = String(description).trim()
-				if (keywords && !result.keywords) result.keywords = Array.isArray(keywords) ? keywords.join(', ') : String(keywords)
+				if (keywords && !result.keywords) result.keywords = normalizeLdValue(keywords, ['name', 'text', 'value'])
 				if (datePublished && !result.date) result.date = String(datePublished).trim()
-				if (author && !result.author) result.author = String(author).trim()
-				if (image && !result.image) result.image = Array.isArray(image) ? String(image[0]) : String(image)
+				if (author && !result.author) result.author = author
+				if (image && !result.image) result.image = image
 				if (mainEntity && !result.canonicalUrl) {
 					let url = mainEntity['@id'] || mainEntity.url
 					if (url) result.canonicalUrl = String(url).trim()
@@ -232,22 +253,57 @@ export async function screenshot(path, options = {}) {
 	})
 }
 
-export async function detectCaptcha(page) {
+export async function detectCaptchaReason(page) {
 	let targetPage = page || await getPage()
-	let captchaFrame = await targetPage.$('iframe[src*="recaptcha"], iframe[src*="hcaptcha"]')
-	if (captchaFrame) return true
+	let captchaFrame = await targetPage.$('iframe[src*="recaptcha"]')
+	let hcaptchaFrame = await targetPage.$('iframe[src*="hcaptcha"]')
 	let cfTurnstile = await targetPage.$('input[name="cf-turnstile-response"], div.cf-turnstile')
-	if (cfTurnstile) return true
+	let contentInfo = { bodyLen: 0, articleLen: 0, hasTitle: false, words: 0, paragraphs: 0 }
+	try {
+		contentInfo = await targetPage.evaluate(() => {
+			const normalize = text => String(text || '').replace(/\s+/g, ' ').trim()
+			const bodyText = normalize(document.body?.innerText || '')
+			const article = document.querySelector('article, main, [role=\"main\"]')
+			const articleText = normalize(article?.innerText || '')
+			const h1 = normalize(document.querySelector('h1')?.innerText || '')
+			const words = bodyText ? bodyText.split(/\s+/).length : 0
+			const paragraphs = [...document.querySelectorAll('article p, main p, [role=\"main\"] p, p')]
+				.map(node => normalize(node?.innerText || ''))
+				.filter(text => text.length >= 80)
+			return {
+				bodyLen: bodyText.length,
+				articleLen: articleText.length,
+				hasTitle: Boolean(h1),
+				words,
+				paragraphs: paragraphs.length,
+			}
+		})
+	} catch {}
+	const hasContent = contentInfo.articleLen >= 160
+		|| contentInfo.bodyLen >= 500
+		|| contentInfo.words >= 120
+		|| contentInfo.paragraphs >= 2
+		|| (contentInfo.hasTitle && contentInfo.bodyLen >= 200)
+	if (hasContent) return ''
 	try {
 		let html = await targetPage.content()
 		let lower = String(html || '').toLowerCase()
-		if (lower.includes('captcha') && (lower.includes('recaptcha') || lower.includes('hcaptcha') || lower.includes('turnstile'))) return true
-		if (lower.includes('verify you are human')) return true
-		if (lower.includes('are you a robot')) return true
-		if (lower.includes('press and hold')) return true
-		if (lower.includes('cloudflare')) return true
+		if (lower.includes('captcha') && (lower.includes('recaptcha') || lower.includes('hcaptcha') || lower.includes('turnstile'))) {
+			return 'keyword:captcha+challenge'
+		}
+		if (lower.includes('verify you are human')) return 'keyword:verify_you_are_human'
+		if (lower.includes('are you a robot')) return 'keyword:are_you_a_robot'
+		if (lower.includes('press and hold')) return 'keyword:press_and_hold'
+		if (lower.includes('cloudflare')) return 'keyword:cloudflare'
 	} catch {}
-	return false
+	if (captchaFrame) return 'iframe:recaptcha'
+	if (hcaptchaFrame) return 'iframe:hcaptcha'
+	if (cfTurnstile) return 'turnstile'
+	return ''
+}
+
+export async function detectCaptcha(page) {
+	return Boolean(await detectCaptchaReason(page))
 }
 
 const pageStatePatterns = {

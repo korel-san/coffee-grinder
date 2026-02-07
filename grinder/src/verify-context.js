@@ -1,18 +1,7 @@
 import { fetchArticle } from './fetch-article.js'
-import { htmlToText } from './html-to-text.js'
 import { log } from './log.js'
 import { extractMetaFromHtml } from './meta-extract.js'
-import { decodeHtmlEntities, normalizeTitleForSearch } from './summarize/utils.js'
-import { verifyContextMaxChars } from '../config/verification.js'
-
-function extractTextSnippet(html) {
-	if (!html) return ''
-	let cleaned = html.replace(/<style[\s\S]*?<\/style>/gi, '')
-	let text = htmlToText(cleaned)?.trim() || ''
-	if (!text) return ''
-	if (!Number.isFinite(verifyContextMaxChars) || verifyContextMaxChars <= 0) return text
-	return text.slice(0, verifyContextMaxChars)
-}
+import { normalizeTitleForSearch } from './summarize/utils.js'
 
 export async function buildVerifyContext(event) {
 	if (event?._verifyContext) return event._verifyContext
@@ -24,7 +13,6 @@ export async function buildVerifyContext(event) {
 		date: event?._originalDate || event?.date || '',
 		description: '',
 		keywords: '',
-		textSnippet: '',
 	}
 	if (context.url) {
 		let html = await fetchArticle(context.url)
@@ -35,7 +23,6 @@ export async function buildVerifyContext(event) {
 			if (meta.keywords) context.keywords = meta.keywords
 			if (meta.date) context.date = meta.date
 			if (meta.canonicalUrl && !context.url) context.url = meta.canonicalUrl
-			context.textSnippet = extractTextSnippet(html)
 		}
 	}
 	context.title = normalizeTitleForSearch(context.title)

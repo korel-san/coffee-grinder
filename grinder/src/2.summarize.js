@@ -1,24 +1,18 @@
 import fs from 'fs'
 import path from 'path'
-import { JSDOM, VirtualConsole } from 'jsdom'
-
 import { log } from './log.js'
-import logUpdate from 'log-update'
-import cliTruncate from 'cli-truncate'
 import { sleep } from './sleep.js'
 import { news, pauseAutoSave, resumeAutoSave, saveRowByIndex, spreadsheetId, spreadsheetMode } from './store.js'
 import { topics, topicsMap } from '../config/topics.js'
 import { decodeGoogleNewsUrl, getGoogleNewsDecodeCooldownMs } from './google-news.js'
 import { fetchArticle, getLastFetchStatus } from './fetch-article.js'
-import { htmlToText } from './html-to-text.js'
+import { isDomainInCooldown } from './domain-cooldown.js'
 import { extractMetaFromHtml } from './meta-extract.js'
 import { ai } from './ai.js'
 import { browseArticle, finalyze } from './browse-article.js'
 import { verifyArticle } from './verify-article.js'
 import { buildVerifyContext } from './verify-context.js'
 import { searchExternal, sourceFromUrl } from './external-search.js'
-import { copyFile } from './google-drive.js'
-import { classifyHtmlState } from './services/playwright.js'
 import { coffeeTodayFolderId, newsSheet } from '../config/google-drive.js'
 import {
 	verifyMode,
@@ -27,6 +21,9 @@ import {
 	verifyFailOpen,
 	verifyModel,
 	verifyUseSearch,
+	verifyProvider,
+	verifyMaxChars,
+	verifyFallbackMaxChars,
 } from '../config/verification.js'
 import { summarizeConfig } from '../config/summarize.js'
 import { externalSearch } from '../config/external-search.js'
@@ -38,18 +35,20 @@ import {
 import {
 	backfillMetaFromDisk,
 	backfillTextFromDisk,
+	getCacheInfo,
 	probeCache,
 	readHtmlFromDisk,
 	saveArticle,
-	writeTextCache,
+	writeCacheMeta,
 } from './summarize/disk.js'
 import {
-	backfillGnUrl,
-	buildFallbackSearchQueries,
-	hydrateFromGoogleNews,
+	buildFallbackSearchQueriesWithAi,
+	getSearchQuerySource,
+	searchGoogleNews,
 } from './summarize/gn.js'
 import { logEvent } from './summarize/logging.js'
 import { logging } from '../config/logging.js'
+import { describeError } from './error-guidance.js'
 import {
 	isBlank,
 	isGoogleNewsUrl,
@@ -57,11 +56,8 @@ import {
 	normalizeUrl,
 	titleFor,
 } from './summarize/utils.js'
+import { createFetchTextWithRetry, extractText, minTextLength } from './summarize/fetch-text.js'
 
-const minTextLength = 400
-const maxHtmlToTextChars = 4_000_000
-const fetchAttempts = 2
-const verifyStatusColumn = 'verifyStatus'
 const contentMethodColumn = 'contentMethod'
 const metaTitleColumn = 'metaTitle'
 const metaDescriptionColumn = 'metaDescription'
@@ -74,79 +70,171 @@ const metaSiteNameColumn = 'metaSiteName'
 const metaSectionColumn = 'metaSection'
 const metaTagsColumn = 'metaTags'
 const metaLangColumn = 'metaLang'
-const progressStepsOverall = ['content', 'verify', 'summarize', 'write']
-const progressStepsSub = ['cache', 'fetch', 'jina', 'playwright']
-const progressSteps = [...progressStepsOverall, ...progressStepsSub]
-const progressBarWidth = 10
 let progressTracker = null
-const jsdomVirtualConsole = new VirtualConsole()
-jsdomVirtualConsole.on('jsdomError', () => {})
-jsdomVirtualConsole.on('error', () => {})
-jsdomVirtualConsole.on('warn', () => {})
 
-function setupLogTee() {
-	const logFile = process.env.LOG_TEE_FILE || process.env.SUMMARIZE_LOG_FILE || ''
-	if (!logFile) return null
-	let stream = null
+const summarizeConsoleLogLevel = String(process.env.SUMMARIZE_CONSOLE_LOG_LEVEL || '').toLowerCase()
+const summarizeConsoleLong = process.argv.includes('--log-long')
+	|| process.env.SUMMARIZE_LOG_LONG === '1'
+	|| summarizeConsoleLogLevel === 'long'
+const summarizeLogFile = process.env.SUMMARIZE_LOG_FILE || 'logs/summarize.log'
+const summarizeHashLength = Number.isFinite(Number(process.env.SUMMARIZE_HASH_LEN))
+	? Math.max(4, Number(process.env.SUMMARIZE_HASH_LEN))
+	: 8
+
+function createFileLogger(filePath) {
+	if (!filePath) return () => {}
 	try {
-		fs.mkdirSync(path.dirname(logFile), { recursive: true })
-		let flags = process.env.LOG_TEE_APPEND === '1' ? 'a' : 'w'
-		stream = fs.createWriteStream(logFile, { flags })
-	} catch (error) {
-		console.error('[warn] log tee init failed:', error?.message || error)
-		return null
-	}
-	const stripAnsi = process.env.LOG_TEE_STRIP_ANSI !== '0'
-	const ansiRegex = /\u001b\[[0-9;?]*[ -/]*[@-~]/g
-	const ansiTest = /\u001b\[[0-9;?]*[ -/]*[@-~]/
-	const writeToFile = (chunk, encoding) => {
+		fs.mkdirSync(path.dirname(filePath), { recursive: true })
+	} catch {}
+	return (shortLine, detailLine) => {
+		let short = shortLine || ''
+		let detail = detailLine || shortLine || ''
+		if (!short && !detail) return
 		try {
-			if (!stream || stream.destroyed) return
-			if (stripAnsi) {
-				let text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
-				let hadAnsi = ansiTest.test(text)
-				text = text.replace(ansiRegex, '').replace(/\r/g, '\n')
-				if (hadAnsi && text && !text.endsWith('\n')) text += '\n'
-				stream.write(text, 'utf8')
-				return
+			let ts = new Date().toISOString()
+			let message = detail || short
+			let record = {
+				ts,
+				level: 'long',
+				message,
+				short,
+				detail,
 			}
-			if (typeof encoding === 'string') {
-				stream.write(chunk, encoding)
-			} else {
-				stream.write(chunk)
-			}
+			fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`)
 		} catch {}
 	}
-	const wrap = target => {
-		const original = target.write.bind(target)
-		target.write = (chunk, encoding, cb) => {
-			writeToFile(chunk, encoding)
-			return original(chunk, encoding, cb)
-		}
-		return () => {
-			target.write = original
-		}
-	}
-	const restoreStdout = wrap(process.stdout)
-	const restoreStderr = wrap(process.stderr)
-	const cleanup = () => {
-		restoreStdout()
-		restoreStderr()
-		try {
-			stream.end()
-		} catch {}
-	}
-	process.on('exit', cleanup)
-	process.on('SIGINT', () => {
-		cleanup()
-		process.exit(130)
-	})
-	process.on('SIGTERM', () => {
-		cleanup()
-		process.exit(143)
-	})
-	return { cleanup }
 }
+
+function formatShortUrl(url) {
+	if (!url) return ''
+	try {
+		let parsed = new URL(url)
+		let host = parsed.host.replace(/^www\./, '')
+		let pathValue = parsed.pathname ? parsed.pathname.replace(/\/+$/, '') : ''
+		let segments = pathValue.split('/').filter(Boolean)
+		if (segments.length) return `${host}/${segments.slice(-1)[0]}`
+		return host
+	} catch {
+		return url
+	}
+}
+
+function formatDurationMs(ms) {
+	if (!Number.isFinite(ms) || ms <= 0) return ''
+	if (ms < 1000) return `${Math.round(ms)}ms`
+	return `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatTextSample(text, limit = 400) {
+	if (!text) return ''
+	let clean = String(text).replace(/\s+/g, ' ').trim()
+	if (!clean) return ''
+	if (!Number.isFinite(limit) || limit <= 0) return clean
+	return clean.length > limit ? `${clean.slice(0, limit)}...` : clean
+}
+
+function mergeCandidateMeta(meta = {}, hints = {}) {
+	let merged = { ...(meta || {}) }
+	if (hints && typeof hints === 'object') {
+		for (let [key, value] of Object.entries(hints)) {
+			if (!value) continue
+			if (!merged[key]) merged[key] = value
+		}
+	}
+	if (merged.siteName && !merged.source) merged.source = merged.siteName
+	return merged
+}
+
+function buildCandidateHints(value = {}) {
+	return {
+		title: value.titleEn || value.titleRu || '',
+		source: value.source || '',
+		gnUrl: value.gnUrl || '',
+		date: value.date || '',
+	}
+}
+
+function cacheKeyForUrl(url) {
+	let info = getCacheInfo({ url: url || '' }, url || '')
+	return info?.key || ''
+}
+
+function normalizedUrlForCache(url) {
+	let info = getCacheInfo({ url: url || '' }, url || '')
+	return info?.url || ''
+}
+
+function getOriginalCacheKey(event) {
+	if (event?._originalCacheKey !== undefined) return event._originalCacheKey
+	let key = cacheKeyForUrl(event?._originalUrl || event?.url || '')
+	event._originalCacheKey = key || ''
+	return event._originalCacheKey
+}
+
+function checkGnCandidateDedup(event, gnUrl) {
+	let normalized = normalizeUrl(gnUrl || '')
+	if (!normalized) return { skip: false, normalized }
+	if (!event._seenGnUrls) event._seenGnUrls = new Set()
+	if (event._seenGnUrls.has(normalized)) {
+		return { skip: true, reason: 'duplicate_gn_url', normalized }
+	}
+	event._seenGnUrls.add(normalized)
+	return { skip: false, normalized }
+}
+
+function checkCandidateDedup(event, url) {
+	let normalized = normalizedUrlForCache(url || '') || ''
+	let key = cacheKeyForUrl(normalized || url || '')
+	let originalKey = getOriginalCacheKey(event)
+	if (key && originalKey && key === originalKey) {
+		return { skip: true, reason: 'same_url', key, normalized }
+	}
+	if (key) {
+		if (!event._seenCandidateKeys) event._seenCandidateKeys = new Set()
+		if (event._seenCandidateKeys.has(key)) {
+			return { skip: true, reason: 'duplicate_candidate', key, normalized }
+		}
+		event._seenCandidateKeys.add(key)
+	}
+	return { skip: false, key, normalized }
+}
+
+function addInlineCandidate(event, url, { reason = 'canonical', source = '', title = '', date = '', gnUrl = '' } = {}) {
+	if (!url) return false
+	let normalized = normalizedUrlForCache(url)
+	if (!normalized || isGoogleNewsUrl(normalized)) return false
+	let key = cacheKeyForUrl(normalized)
+	if (!key) return false
+	let originalKey = cacheKeyForUrl(event?._originalUrl || event?.url || '')
+	if (originalKey && originalKey === key) return false
+	if (!event._inlineCandidateKeys) event._inlineCandidateKeys = new Set()
+	if (event._inlineCandidateKeys.has(key)) return false
+	event._inlineCandidateKeys.add(key)
+	if (!Array.isArray(event._inlineCandidates)) event._inlineCandidates = []
+	event._inlineCandidates.push({
+		url: normalized,
+		source: source || event?.source || '',
+		titleEn: title || '',
+		date: date || '',
+		gnUrl: gnUrl || '',
+		origin: 'inline',
+		reason,
+	})
+	return true
+}
+
+function createRunLogger() {
+	const writeFile = createFileLogger(summarizeLogFile)
+	const logLine = (shortLine, detailLine) => {
+		let detail = detailLine || shortLine
+		if (shortLine || detailLine) writeFile(shortLine, detailLine)
+		let line = summarizeConsoleLong ? (detail || shortLine) : shortLine
+		if (line) console.log(line)
+	}
+	return { logLine }
+}
+
+const runLogger = createRunLogger()
 
 const isSummarizeCli = Array.isArray(process.argv)
 	? process.argv.some(arg => String(arg).includes('2.summarize'))
@@ -154,22 +242,11 @@ const isSummarizeCli = Array.isArray(process.argv)
 if (isSummarizeCli) {
 	globalThis.__LOG_SUPPRESS_ALL = true
 }
-setupLogTee()
 
-let cacheUrlAliases = null
-
-function createProgressTracker(total) {
-	const state = new Map()
-	const order = []
-	const spinnerFrames = ['-', '\\', '|', '/']
-	let spinnerIndex = 0
-	let spinnerTimer = null
-	const canUpdate = Boolean(process.stdout.isTTY)
-	let headerLines = []
-	let footerLines = []
-	let headerPrinted = false
-	let footerPrinted = false
-	let lastOutput = ''
+function createProgressTracker() {
+	const states = new Map()
+	const stepStarts = new Map()
+	const durations = new Map()
 	const terminalStatuses = new Set([
 		'ok',
 		'skipped',
@@ -184,89 +261,15 @@ function createProgressTracker(total) {
 		'error',
 		'no_text',
 		'unverified',
+		'short',
+		'blocked',
+		'empty',
 	])
-	const buildLinkLabel = url => {
-		if (!url) return ''
-		try {
-			let parsed = new URL(url)
-			let host = parsed.host.replace(/^www\./, '')
-			let path = parsed.pathname ? parsed.pathname.replace(/\/+$/, '') : ''
-			let segments = path.split('/').filter(Boolean)
-			if (segments.length) {
-				return `${host}/${segments.slice(-1)[0]}`
-			}
-			return host
-		} catch {
-			return url
-		}
-	}
-	const formatOsc8 = (label, url) => {
-		return label || ''
-	}
-	const sanitizeSummary = text => {
-		if (!text) return ''
-		return String(text).replace(/\s+/g, ' ').trim()
-	}
-	const buildContextKey = (url, isFallback, kind) => {
-		let key = url || ''
-		let bucket = kind || 'net'
-		return `${bucket}:${isFallback ? 'alt' : 'orig'}:${key}`
-	}
-	const formatLinkLine = event => {
-		let url = event._originalUrl || event.url || event.gnUrl || ''
-		let label = truncate(buildLinkLabel(url) || url, 90)
-		let linkText = formatOsc8(label, url)
-		let current = getState(event.id)
-		let winnerId = current.winnerContextId
-		let winnerContext = winnerId ? current.contextMap.get(winnerId) : null
-		let winnerIndex = winnerContext ? current.contexts.indexOf(winnerContext) + 1 : 0
-		let totalMs = current.eventTotalMs || winnerContext?.total?.ms || 0
-		let winnerTime = totalMs ? formatDuration(totalMs) : ''
-		let winnerTag = winnerIndex && winnerTime ? ` #${event.id}.${winnerIndex}(${winnerTime})` : ''
-		let note = current.note ? ` [${current.note}]` : ''
-		return `#${event.id} ${linkText}${winnerTag}${note}`.trimEnd()
-	}
-	const formatSummaryLine = summary => {
-		let summaryText = truncate(sanitizeSummary(summary), 160)
-		let value = summaryText || '--'
-		return `    summary: ${value}`.trimEnd()
-	}
-const formatContextLine = (context, index) => {
-		let label = truncate(buildLinkLabel(context.url) || context.url || '', 90)
-		let linkText = formatOsc8(label, context.url || '')
-		let prefix = context.kind === 'cache' ? 'cache' : (context.isFallback ? 'alt' : 'link')
-		let origin = context.origin ? `origin:${context.origin}` : ''
-		let contentStatus = formatStatusLabel(context.content?.status)
-		let contentMethod = context.content?.method ? `(${context.content.method})` : ''
-		let contentMs = formatDuration(context.content?.ms)
-		let contentTime = contentMs ? `(${contentMs})` : ''
-		let prepareStatus = formatStatusLabel(context.prepare?.status)
-		let prepareMs = formatDuration(context.prepare?.ms)
-		let prepareTime = prepareMs ? `(${prepareMs})` : ''
-		let prepareLabel = `prepare:${prepareStatus}${prepareTime}`
-		let verifyStatus = formatStatusLabel(context.verify?.status)
-		let verifyMs = formatDuration(context.verify?.ms)
-		let verifyTime = verifyMs ? `(${verifyMs})` : ''
-		let verifyModel = context.verify?.model ? `(${context.verify.model})` : ''
-		let verifyNoteValue = context.verify?.note ? String(context.verify.note) : ''
-		let verifyNoteLabel = verifyNoteValue ? ` ${verifyNoteValue}` : ''
-		if (verifyStatus === '--' && verifyNoteValue) verifyStatus = 'unknown'
-		let meta = `${origin ? `${origin} ` : ''}content:${contentStatus}${contentMethod}${contentTime}\t${prepareLabel}\tverify:${verifyStatus}${verifyModel}${verifyTime}${verifyNoteLabel}`
-		let indexLabel = index ? `${prefix}${index}` : prefix
-		return `    ${indexLabel} ${linkText}  ${meta}`.trimEnd()
-	}
-	const buildBar = done => {
-		let filled = Math.min(progressBarWidth, Math.round((done / totalSteps) * progressBarWidth))
-		let empty = Math.max(0, progressBarWidth - filled)
-		return `[${'#'.repeat(filled)}${'-'.repeat(empty)}]`
-	}
-	const shortStatus = value => {
+	const normalizeStatus = value => {
 		let text = String(value || '').toLowerCase()
-		if (!text) return '--'
+		if (!text) return 'unknown'
 		let map = {
 			start: 'start',
-			ready: 'ready',
-			loaded: 'ready',
 			wait: 'wait',
 			ok: 'ok',
 			skipped: 'skipped',
@@ -274,6 +277,8 @@ const formatContextLine = (context, index) => {
 			miss: 'miss',
 			reject: 'reject',
 			mismatch: 'mismatch',
+			short: 'short',
+			blocked: 'blocked',
 			captcha: 'captcha',
 			timeout: 'timeout',
 			rate_limit: 'rate_limit',
@@ -282,381 +287,137 @@ const formatContextLine = (context, index) => {
 			fail: 'fail',
 			error: 'error',
 			no_text: 'no_text',
-			mismatch: 'mismatch',
 			unverified: 'unverified',
 		}
 		return map[text] || text
 	}
-	const formatStatusLabel = value => {
-		let text = String(value || '').toLowerCase()
-		if (text === 'start') return `${spinnerFrames[spinnerIndex]}`
-		if (text === 'wait') return `wait${spinnerFrames[spinnerIndex]}`
-		return shortStatus(text)
+	const buildContextLabel = ({ isFallback, origin }) => {
+		if (!isFallback) return 'orig'
+		if (origin) return `alt:${origin}`
+		return 'alt'
 	}
-	const totalSteps = progressStepsOverall.length
-	const barFromFraction = fraction => {
-		let clamped = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0))
-		let filled = Math.min(progressBarWidth, Math.round(clamped * progressBarWidth))
-		let empty = Math.max(0, progressBarWidth - filled)
-		return `[${'#'.repeat(filled)}${'-'.repeat(empty)}]`
-	}
-	const barFromStatus = status => {
-		let text = String(status || '').toLowerCase()
-		if (text === 'start') return barFromFraction(0.1)
-		if (text === 'wait') return barFromFraction(0.1)
-		if (['ok', 'skipped', 'miss', 'mismatch', 'reject', 'captcha', 'timeout', 'rate_limit', '504', 'fail', 'error', 'no_text'].includes(text)) {
-			return barFromFraction(1)
-		}
-		return barFromFraction(0.3)
-	}
-	const parseProgress = note => {
-		if (!note) return null
-		let match = String(note).match(/(\d+)\s*\/\s*(\d+)/)
-		if (!match) return null
-		let current = Number(match[1])
-		let totalValue = Number(match[2])
-		if (!Number.isFinite(current) || !Number.isFinite(totalValue) || totalValue <= 0) return null
-		return current / totalValue
-	}
-	const formatLine = (indent, label, bar, status, note) => {
-		let stepLabel = label.padEnd(10, ' ')
-		let statusLabel = String(formatStatusLabel(status)).padEnd(8, ' ')
-		let suffix = note ? ` ${note}` : ''
-		return `${indent}${stepLabel} ${bar} ${statusLabel}${suffix}`.trimEnd()
-	}
-	const formatDuration = ms => {
-		if (!Number.isFinite(ms) || ms <= 0) return ''
-		if (ms < 1000) return `${Math.round(ms)}ms`
-		return `${(ms / 1000).toFixed(1)}s`
-	}
-	const markTiming = (bucket, step, status) => {
-		if (!bucket[step]) bucket[step] = { start: 0, end: 0, ms: 0 }
-		let now = Date.now()
-		if (status === 'start') {
-			if (!bucket[step].start) bucket[step].start = now
-			return
-		}
-		if (terminalStatuses.has(String(status || '').toLowerCase())) {
-			if (bucket[step].ms && bucket[step].ms > 0) return
-			if (!bucket[step].start) bucket[step].start = now
-			bucket[step].end = now
-			bucket[step].ms = Math.max(0, bucket[step].end - bucket[step].start)
-		}
-	}
-	const formatOverall = (event, doneCount, note) => {
-		let current = getState(event.id)
-		let bar = buildBar(doneCount)
-		let s = formatStatusLabel(current.overall.summarize)
-		let w = formatStatusLabel(current.overall.write)
-		let sMs = formatDuration(current.timings.overall.summarize?.ms)
-		let wMs = formatDuration(current.timings.overall.write?.ms)
-		let summarizeModel = current.overallNote.summarize ? `(${current.overallNote.summarize})` : ''
-		let status = `summarize:${s}${summarizeModel}${sMs ? `(${sMs})` : ''}\twrite:${w}${wMs ? `(${wMs})` : ''}`
-		return formatLine('    ', 'overall', bar, status, '')
-	}
-	const getState = eventId => {
-		let existing = state.get(eventId)
+	const getState = event => {
+		let existing = states.get(event.id)
 		if (existing) return existing
 		let created = {
-			done: new Set(),
-			contexts: [],
-			contextMap: new Map(),
-			activeContextId: '',
-			primaryContextId: '',
-			winnerContextId: '',
-			eventStartMs: 0,
-			eventTotalMs: 0,
-			overall: { content: '', verify: '', summarize: '', write: '' },
-			overallNote: { content: '', verify: '', summarize: '', write: '' },
-			summary: '',
-			summaryLogged: false,
-			note: '',
-			timings: {
-				overall: { content: {}, verify: {}, summarize: {}, write: {} },
-			},
+			event,
+			contextKey: '',
+			contextLabel: '',
+			hashShort: '',
+			hashFull: '',
+			url: '',
+			normUrl: '',
+			origin: '',
+			summarizeModel: '',
 		}
-		state.set(eventId, created)
+		states.set(event.id, created)
 		return created
 	}
-	const ensureContext = (current, { url, isFallback, kind, origin }) => {
-		let key = buildContextKey(url, isFallback, kind)
-		let existing = current.contextMap.get(key)
-		if (existing) {
-			if (origin && !existing.origin) existing.origin = origin
-			return existing
-		}
-		let context = {
-			id: key,
-			url: url || '',
-			isFallback: Boolean(isFallback),
-			kind: kind || 'net',
-			origin: origin || '',
-			total: { start: 0, end: 0, ms: 0 },
-			content: { status: '--', method: '', ms: 0 },
-			verify: { status: '--', ms: 0 },
-			prepare: { status: '--', ms: 0 },
-			steps: {
-				cache: { status: '--', note: '' },
-				fetch: { status: '--', note: '' },
-				jina: { status: '--', note: '' },
-				playwright: { status: '--', note: '' },
-			},
-			timings: { fetch: {}, jina: {}, playwright: {} },
-		}
-		current.contextMap.set(key, context)
-		current.contexts.push(context)
-		return context
+	const formatPrefix = state => {
+		let parts = [`#${state.event.id}`]
+		if (state.hashShort) parts.push(`[${state.hashShort}]`)
+		if (state.contextLabel) parts.push(state.contextLabel)
+		return parts.join(' ')
 	}
-	const getActiveContext = current => {
-		if (current.activeContextId && current.contextMap.has(current.activeContextId)) {
-			return current.contextMap.get(current.activeContextId)
-		}
-		if (current.contexts.length) return current.contexts[0]
-		let context = ensureContext(current, { url: '', isFallback: false })
-		current.activeContextId = context.id
-		return context
+	const logContext = (state, rawUrl, normUrl, hashFull, origin) => {
+		let prefix = formatPrefix(state)
+		let shortUrl = formatShortUrl(normUrl || rawUrl)
+		let shortLine = `${prefix} ctx url=${shortUrl || '--'}`
+		let detailLine = `${prefix} ctx url=${rawUrl || ''} norm=${normUrl || ''} hash=${hashFull || ''}${origin ? ` origin=${origin}` : ''}`.trim()
+		runLogger.logLine(shortLine, detailLine)
 	}
-	const render = () => {
-		let bodyLines = []
-		let hasActive = false
-		for (let eventId of order) {
-			let current = state.get(eventId)
-			if (!current) continue
-			let event = current.event
-			let summarizeStatus = String(current.overall.summarize || '').toLowerCase()
-			let writeStatus = String(current.overall.write || '').toLowerCase()
-			if (summarizeStatus === 'start' || summarizeStatus === 'wait' || writeStatus === 'start' || writeStatus === 'wait') {
-				hasActive = true
-			}
-			bodyLines.push(formatLinkLine(event))
-			for (let contextIndex = 0; contextIndex < current.contexts.length; contextIndex++) {
-				let context = current.contexts[contextIndex]
-				let contentStatus = String(context.content?.status || '').toLowerCase()
-				let verifyStatus = String(context.verify?.status || '').toLowerCase()
-				if (contentStatus === 'start' || contentStatus === 'wait' || verifyStatus === 'start' || verifyStatus === 'wait') {
-					hasActive = true
-				}
-				bodyLines.push(formatContextLine(context, contextIndex + 1))
-				if (context.kind !== 'cache') {
-					for (let step of progressStepsSub) {
-						let entry = context.steps[step] || { status: '--', note: '' }
-						let stepStatus = String(entry.status || '').toLowerCase()
-						if (stepStatus === 'start' || stepStatus === 'wait') hasActive = true
-						let fraction = parseProgress(entry.note)
-						let bar = fraction !== null ? barFromFraction(fraction) : barFromStatus(entry.status)
-						let duration = formatDuration(context.timings[step]?.ms)
-						let note = entry.note
-						if (duration) note = note ? `${note} ${duration}` : duration
-						bodyLines.push(formatLine('        ', step, bar, entry.status, note))
-					}
-				}
-			}
-			bodyLines.push(formatOverall(event, current.done.size, current.note))
-			bodyLines.push(formatSummaryLine(current.summary))
-		}
-		let maxRows = process.stdout.rows || 0
-		if (!maxRows || maxRows < 10) maxRows = 40
-		if (maxRows > 0) {
-			let headerCount = headerLines.length ? headerLines.length + 1 : 0
-			let footerCount = footerLines.length ? footerLines.length + 1 : 0
-			let available = maxRows - headerCount - footerCount
-			if (available > 0 && bodyLines.length > available) {
-				bodyLines = bodyLines.slice(bodyLines.length - available)
-				if (available >= 2) bodyLines[0] = '...'
-			}
-		}
-		let lines = []
-		lines.push(...bodyLines)
-		if (footerLines.length) {
-			lines.push('')
-			for (let line of footerLines) lines.push(line)
-		}
-		if (canUpdate && hasActive && !spinnerTimer) {
-			spinnerTimer = setInterval(() => {
-				spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length
-				render()
-			}, 120)
-		} else if ((!hasActive || !canUpdate) && spinnerTimer) {
-			clearInterval(spinnerTimer)
-			spinnerTimer = null
-		}
-		if (!canUpdate) {
-			if (!headerPrinted && headerLines.length) {
-				console.log(headerLines.join('\n'))
-				console.log('')
-				headerPrinted = true
-			}
-			let output = lines.join('\n')
-			if (output && output !== lastOutput) {
-				console.log(output)
-				lastOutput = output
-			}
-			return
-		}
-		let width = process.stdout.columns || 120
-		let output = lines.map(line => cliTruncate(line, width, { position: 'end' })).join('\n')
-		logUpdate(output)
-	}
+	const stepKey = (state, step) => `${state.event.id}|${state.contextKey}|${step}`
 	return {
-		start(event, index) {
-			let current = getState(event.id)
-			let summaryText = event?.summary ? truncate(sanitizeSummary(event.summary), 160) : ''
-			current.summary = summaryText || ''
-			if (summaryText) current.summaryLogged = true
-			current.event = event
-			current.note = ''
-			if (!current.eventStartMs) current.eventStartMs = Date.now()
-			order.push(event.id)
-			current.overall.content = 'start'
-			markTiming(current.timings.overall, 'content', 'start')
-			render()
+		start(event) {
+			let state = getState(event)
+			state.event = event
+			let title = titleFor(event)
+			let prefix = formatPrefix(state)
+			let shortLine = `${prefix} start${title ? ` title="${truncate(title, 80)}"` : ''}`
+			let detailLine = `${prefix} start${title ? ` title="${title}"` : ''}`
+			runLogger.logLine(shortLine, detailLine)
 		},
 		setContext(event, { url, isFallback, kind, origin }) {
-			let current = getState(event.id)
-			let context = ensureContext(current, { url, isFallback, kind, origin })
-			if (!context.total.start) context.total.start = Date.now()
-			current.activeContextId = context.id
-			if (!context.content || context.content.status === '--') {
-				if (kind === 'cache') {
-					context.content = { status: 'ready', method: 'cache', ms: 0 }
-				} else {
-					context.content = { status: 'start', method: 'lookup', ms: 0 }
-				}
+			let state = getState(event)
+			let cacheInfo = getCacheInfo({ url: url || '' }, url || '')
+			let normUrl = cacheInfo?.url || url || ''
+			let hashFull = cacheInfo?.key || ''
+			let hashShort = hashFull ? hashFull.slice(0, summarizeHashLength) : ''
+			let contextKey = `${kind || 'net'}:${isFallback ? 'alt' : 'orig'}:${hashFull || normUrl || url || ''}`
+			if (contextKey != state.contextKey) {
+				state.contextKey = contextKey
+				state.contextLabel = buildContextLabel({ isFallback, origin })
+				state.hashShort = hashShort
+				state.hashFull = hashFull
+				state.url = url || ''
+				state.normUrl = normUrl || ''
+				state.origin = origin || ''
+				logContext(state, url || '', normUrl || '', hashFull || '', origin || '')
 			}
-			render()
 		},
-		setWinnerContext(event, { url, isFallback, kind, origin }) {
-			let current = getState(event.id)
-			let context = ensureContext(current, { url, isFallback, kind, origin })
-			current.winnerContextId = context.id
-			render()
-		},
-		setContextContent(event, { status, method, ms }) {
-			let current = getState(event.id)
-			let context = getActiveContext(current)
-			context.content = {
-				status: status || context.content?.status || '--',
-				method: method || context.content?.method || '',
-				ms: Number.isFinite(ms) ? ms : (context.content?.ms || 0),
-			}
-			render()
-		},
-		setContextVerify(event, { status, ms, note, model }) {
-			let current = getState(event.id)
-			let context = getActiveContext(current)
-			if (context.total.start && !context.total.end && status !== 'start' && status !== 'wait') {
-				context.total.end = Date.now()
-				context.total.ms = Math.max(0, context.total.end - context.total.start)
-			}
-			context.verify = {
-				status: status || context.verify?.status || '--',
-				ms: Number.isFinite(ms) ? ms : (context.verify?.ms || 0),
-				note: note || context.verify?.note || '',
-				model: model || context.verify?.model || '',
-			}
-			render()
-		},
-		setContextPrepare(event, { status, ms }) {
-			let current = getState(event.id)
-			let context = getActiveContext(current)
-			context.prepare = {
-				status: status || context.prepare?.status || '--',
-				ms: Number.isFinite(ms) ? ms : (context.prepare?.ms || 0),
-			}
-			render()
-		},
+		setWinnerContext() {},
+		setContextContent() {},
+		setContextVerify() {},
+		setContextPrepare() {},
+		setContextPrepareText() {},
+		setContextPrepareNote() {},
+		setContextText() {},
+		setContextNote() {},
+		setFooter() {},
 		setSummarizeModel(event, model) {
-			let current = getState(event.id)
-			current.overallNote.summarize = model || ''
-			render()
-		},
-		setHeader(lines) {
-			headerLines = Array.isArray(lines) ? lines.filter(Boolean) : []
-			render()
-		},
-		setFooter(lines) {
-			footerLines = Array.isArray(lines) ? lines.filter(Boolean) : []
-			if (canUpdate) render()
-		},
-		begin(event, step) {
-			if (!progressSteps.includes(step)) return
-			let current = getState(event.id)
-			if (progressStepsOverall.includes(step)) {
-				markTiming(current.timings.overall, step, 'start')
-			} else if (progressStepsSub.includes(step)) {
-				let context = getActiveContext(current)
-				markTiming(context.timings, step, 'start')
-			}
+			let state = getState(event)
+			state.summarizeModel = model || ''
 		},
 		step(event, step, status, note) {
-			if (!progressSteps.includes(step)) return
-			let current = getState(event.id)
-			if (step === 'summarize' && status === 'ok' && note) {
-				let summaryText = truncate(sanitizeSummary(note), 160)
-				if (summaryText && summaryText !== current.summary) {
-					current.summary = summaryText
-					current.summaryLogged = true
+			let state = getState(event)
+			let normalized = normalizeStatus(status)
+			let key = stepKey(state, step)
+			if (normalized === 'start' || normalized === 'wait') {
+				stepStarts.set(key, Date.now())
+			}
+			let ms = null
+			if (terminalStatuses.has(normalized)) {
+				let started = stepStarts.get(key)
+				if (started) {
+					ms = Date.now() - started
+					durations.set(key, ms)
+				}
+				if (ms === null) {
+					let stored = durations.get(key)
+					if (Number.isFinite(stored)) ms = stored
 				}
 			}
-			if (progressStepsOverall.includes(step)) {
-				let noteChanged = note && note !== current.overallNote[step]
-				let isTerminal = status && status !== 'start' && status !== 'wait'
-				if (isTerminal && current.done.has(step) && !noteChanged) return
-				if (isTerminal) current.done.add(step)
-				if (note && step === 'content') current.overallNote.content = note
-				markTiming(current.timings.overall, step, status || 'start')
-				if (step === 'write' && isTerminal && current.eventStartMs && !current.eventTotalMs) {
-					current.eventTotalMs = Math.max(0, Date.now() - current.eventStartMs)
-				}
-			}
-			if (progressStepsSub.includes(step)) {
-				let context = getActiveContext(current)
-				context.steps[step] = { status: status || 'start', note: note || '' }
-				markTiming(context.timings, step, status || 'start')
-			} else if (progressStepsOverall.includes(step)) {
-				current.overall[step] = status || 'start'
-			}
-			render()
+			let dur = ms ? ` (${formatDurationMs(ms)})` : ''
+			let noteText = note ? ` ${note}` : ''
+			let prefix = formatPrefix(state)
+			let shortLine = `${prefix} ${step} ${normalized}${dur}${noteText}`.trim()
+			runLogger.logLine(shortLine, shortLine)
 		},
 		setDuration(event, step, ms) {
-			let current = getState(event.id)
-			if (progressStepsOverall.includes(step)) {
-				current.timings.overall[step] = { start: 0, end: 0, ms }
-			} else if (progressStepsSub.includes(step)) {
-				let context = getActiveContext(current)
-				context.timings[step] = { start: 0, end: 0, ms }
-			}
-			render()
+			let state = getState(event)
+			let key = stepKey(state, step)
+			if (Number.isFinite(ms)) durations.set(key, ms)
 		},
 		getDuration(event, step) {
-			let current = getState(event.id)
-			if (progressStepsOverall.includes(step)) {
-				return current.timings.overall[step]?.ms ?? null
-			}
-			if (progressStepsSub.includes(step)) {
-				let context = getActiveContext(current)
-				return context.timings[step]?.ms ?? null
-			}
-			return null
+			let state = getState(event)
+			let key = stepKey(state, step)
+			return durations.get(key) ?? null
 		},
-		flushSubsteps() {
-			render()
+		getPrefix(event) {
+			let state = getState(event)
+			return formatPrefix(state)
 		},
-		done() {
-			if (spinnerTimer) {
-				clearInterval(spinnerTimer)
-				spinnerTimer = null
-			}
-			if (!canUpdate) {
-				if (!footerPrinted && footerLines.length) {
-					console.log('')
-					console.log(footerLines.join('\n'))
-					footerPrinted = true
-				}
-				return
-			}
-			logUpdate.done()
+		logTextSample(event, text, label = 'text') {
+			let state = getState(event)
+			let sample = formatTextSample(text, 400)
+			if (!sample) return
+			let prefix = formatPrefix(state)
+			let shortLine = `${prefix} ${label} len=${text.length}`
+			let detailLine = `${prefix} ${label} len=${text.length} sample="${sample}"`
+			runLogger.logLine(shortLine, detailLine)
 		},
+		flushSubsteps() {},
+		done() {},
 	}
 }
 
@@ -723,9 +484,11 @@ function setOriginalUrlIfMissing(event) {
 }
 
 function applyFallbackSelection(event, alt, altUrl) {
-	if (isBlank(event.source) && alt?.source) event.source = alt.source
-	if (isBlank(event.gnUrl) && !isBlank(alt?.gnUrl)) event.gnUrl = alt.gnUrl
-	if (isBlank(event.titleEn) && !isBlank(alt?.titleEn)) event.titleEn = alt.titleEn
+	let origin = String(alt?.origin || '').toLowerCase()
+	let isGn = origin === 'gn'
+	if (!isGn && isBlank(event.source) && alt?.source) event.source = alt.source
+	if (!isGn && isBlank(event.gnUrl) && !isBlank(alt?.gnUrl)) event.gnUrl = alt.gnUrl
+	if (!isGn && isBlank(event.titleEn) && !isBlank(alt?.titleEn)) event.titleEn = alt.titleEn
 	if (isBlank(event.url) && altUrl) event.url = altUrl
 	if (isBlank(event.gnUrl) && isBlank(event.alternativeUrl) && !isBlank(altUrl)) {
 		let originalUrl = normalizeUrl(event.url || '')
@@ -762,6 +525,9 @@ function setContentSource(event, { url, source, method, isFallback }) {
 		if (normalized === 'cache') return 0
 		if (normalized === 'fetch') return progressTracker.getDuration(event, 'fetch')
 		if (normalized === 'jina') return progressTracker.getDuration(event, 'jina')
+		if (normalized === 'archive') return progressTracker.getDuration(event, 'archive')
+		if (normalized === 'wayback') return progressTracker.getDuration(event, 'wayback')
+		if (normalized === 'wayback-jina') return progressTracker.getDuration(event, 'wayback')
 		if (normalized === 'browse' || normalized === 'playwright') return progressTracker.getDuration(event, 'playwright')
 		return null
 	}
@@ -851,18 +617,34 @@ function summarizeSearchResults(results, limit = 8) {
 	}))
 }
 
-function logSearchQuery(event, { phase, provider, query, queries }) {
+function getLogPrefix(event) {
+	return progressTracker?.getPrefix?.(event) || `#${event.id}`
+}
+
+function logSearchQuery(event, { phase, provider, query, queries, reason }) {
+	let prefix = getLogPrefix(event)
+	let label = provider ? `${provider}` : ''
+	let reasonText = reason ? ` reason=${reason}` : ''
+	let shortLine = `${prefix} ${phase} query${label ? ` (${label})` : ''}${query ? ` ${truncate(query, 120)}` : ''}${reasonText}`.trim()
+	let detailLine = `${prefix} ${phase} query${label ? ` (${label})` : ''}${query ? ` ${query}` : ''}${reasonText}`.trim()
+	runLogger.logLine(shortLine, detailLine)
 	logEvent(event, {
 		phase,
 		status: 'query',
 		provider,
 		query,
 		queries,
+		reason,
 	}, `#${event.id} ${phase} query`, 'info')
 }
 
 function logSearchResults(event, { phase, provider, query, results }) {
 	let count = Array.isArray(results) ? results.length : 0
+	let prefix = getLogPrefix(event)
+	let label = provider ? `${provider}` : ''
+	let shortLine = `${prefix} ${phase} results${label ? ` (${label})` : ''} count=${count}`.trim()
+	let detailLine = `${prefix} ${phase} results${label ? ` (${label})` : ''} count=${count}${query ? ` query="${query}"` : ''}`.trim()
+	runLogger.logLine(shortLine, detailLine)
 	logEvent(event, {
 		phase,
 		status: count ? 'ok' : 'empty',
@@ -873,9 +655,48 @@ function logSearchResults(event, { phase, provider, query, results }) {
 	}, `#${event.id} ${phase} ${count}`, count ? 'info' : 'warn')
 }
 
+function logSearchQueryContext(event, { phase, queryInfo, provider }) {
+	if (!queryInfo) return
+	let meta = queryInfo.contextMeta || {}
+	let context = queryInfo.logContext || queryInfo.context || {}
+	let mode = meta.mode || (meta.usedUrl ? 'url' : 'title_desc')
+	let titleLen = Number.isFinite(meta.titleLength) ? meta.titleLength : String(context.title || '').trim().length
+	let descLen = Number.isFinite(meta.descriptionLength) ? meta.descriptionLength : String(context.description || '').trim().length
+	let urlLen = Number.isFinite(meta.urlLength) ? meta.urlLength : String(context.url || '').trim().length
+	let providerName = queryInfo.provider || provider || ''
+	let modelName = queryInfo.model || ''
+	let aiUsed = queryInfo.aiUsed ? '1' : '0'
+	let aiResponse = queryInfo.aiResponse || ''
+	let prefix = getLogPrefix(event)
+	let shortLine = `${prefix} ${phase} context mode=${mode} titleLen=${titleLen} descLen=${descLen} urlLen=${urlLen} ai=${aiUsed}${providerName ? ` provider=${providerName}` : ''}${modelName ? ` model=${modelName}` : ''}`.trim()
+	let includeAiResponse = queryInfo.aiUsed ? ` aiResponse="${truncate(aiResponse || '', 200)}"` : ''
+	let detailLine = `${shortLine} title="${truncate(context.title || '', 120)}" description="${truncate(context.description || '', 120)}" url="${truncate(context.url || '', 120)}"${includeAiResponse}`.trim()
+	runLogger.logLine(shortLine, detailLine)
+	logEvent(event, {
+		phase: `${phase}_context`,
+		status: 'ok',
+		mode,
+		titleLength: titleLen,
+		descriptionLength: descLen,
+		urlLength: urlLen,
+		provider: providerName,
+		model: modelName,
+		aiUsed: queryInfo.aiUsed || false,
+		aiResponse,
+		context,
+	}, shortLine, 'info')
+}
+
 function logCandidateDecision(event, candidate, status, reason, { phase = 'fallback_candidate', provider = '', query = '' } = {}) {
 	let level = Number.isFinite(candidate?.level) ? candidate.level : undefined
 	let logLevel = (status === 'accepted' || status === 'attempt' || status === 'selected') ? 'info' : 'warn'
+	let prefix = getLogPrefix(event)
+	let source = candidate?.source || ''
+	let link = candidate?.url || candidate?.gnUrl || ''
+	let shortLink = link ? formatShortUrl(link) : ''
+	let shortLine = `${prefix} ${phase} ${status}${source ? ` ${source}` : ''}${reason ? ` (${reason})` : ''}${shortLink ? ` link=${shortLink}` : ''}`.trim()
+	let detailLine = `${shortLine}${candidate?.url ? ` url=${candidate.url}` : ''}${(!candidate?.url && candidate?.gnUrl) ? ` gnUrl=${candidate.gnUrl}` : ''}`.trim()
+	runLogger.logLine(shortLine, detailLine)
 	logEvent(event, {
 		phase,
 		status,
@@ -891,92 +712,34 @@ function logCandidateDecision(event, candidate, status, reason, { phase = 'fallb
 	}, `#${event.id} ${phase} ${status} ${candidate?.source || ''}${reason ? ` (${reason})` : ''}`, logLevel)
 }
 
-function logCacheLine(event, status, info = {}) {
-	if (progressTracker) return
-	let prev = globalThis.__LOG_SUPPRESS
-	globalThis.__LOG_SUPPRESS = false
-	let parts = [`[cache] #${event?.id || ''}`, status]
-	if (info.reason) parts.push(`reason=${info.reason}`)
-	if (info.key) parts.push(`key=${String(info.key).slice(0, 10)}`)
-	if (info.url) parts.push(`url=${truncate(info.url, 90)}`)
-	if (info.hasHtml || info.hasTxt) {
-		parts.push(`files=${info.hasHtml ? 1 : 0}/${info.hasTxt ? 1 : 0}`)
+async function fetchGnCandidates(event, last) {
+	let queryInfo = await buildFallbackSearchQueriesWithAi(event, { allowAi: true })
+	logSearchQueryContext(event, { phase: 'gn_search', queryInfo, provider: 'gn' })
+	let queries = Array.isArray(queryInfo?.queries) ? queryInfo.queries : []
+	if (!queries.length) {
+		let skipReason = queryInfo?.reason || 'no_queries'
+		logEvent(event, {
+			phase: 'gn_search',
+			status: 'skipped',
+			reason: skipReason,
+			provider: 'gn',
+		}, `#${event.id} gn search skipped (${skipReason})`, 'warn')
+		return []
 	}
-	log(parts.join(' ').trim())
-	globalThis.__LOG_SUPPRESS = prev
-}
-
-function buildHostSlug(url) {
-	if (!url) return ''
-	try {
-		let candidate = url
-		if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
-			candidate = `https://${candidate}`
-		}
-		let parsed = new URL(candidate)
-		let host = parsed.hostname.replace(/^www\./, '')
-		let pathValue = parsed.pathname ? parsed.pathname.replace(/\/+$/, '') : ''
-		let segments = pathValue.split('/').filter(Boolean)
-		let slug = segments.length ? segments[segments.length - 1] : ''
-		if (!slug) return ''
-		return `${host}/${slug}`
-	} catch {
-		return ''
+	let combined = []
+	for (let query of queries) {
+		logSearchQuery(event, { phase: 'gn_search', provider: 'gn', query, reason: queryInfo?.reason || getSearchQuerySource(event) })
+		let results = await searchGoogleNews(query, last, event)
+		logSearchResults(event, { phase: 'gn_search', provider: 'gn', query, results })
+		if (results.length) combined.push(...results)
 	}
-}
-
-function buildCacheAliasIndex() {
-	let map = new Map()
-	let dir = 'articles'
-	try {
-		if (!fs.existsSync(dir)) return map
-		let entries = fs.readdirSync(dir)
-		for (let name of entries) {
-			if (!name.endsWith('.html')) continue
-			let filePath = path.join(dir, name)
-			let fd = null
-			try {
-				fd = fs.openSync(filePath, 'r')
-				let buffer = Buffer.alloc(2048)
-				let bytes = fs.readSync(fd, buffer, 0, buffer.length, 0)
-				if (!bytes) continue
-				let text = buffer.toString('utf8', 0, bytes)
-				let match = text.match(/^<!--\s*([\s\S]*?)\s*-->/)
-				let url = match?.[1] ? normalizeUrl(match[1].trim()) : ''
-				if (!url) continue
-				let key = buildHostSlug(url)
-				if (!key || map.has(key)) continue
-				map.set(key, url)
-			} catch {
-				continue
-			} finally {
-				if (fd) fs.closeSync(fd)
-			}
-		}
-	} catch {
-		return map
-	}
-	return map
-}
-
-function resolveCacheAlias(url) {
-	if (!cacheUrlAliases || !url) return ''
-	let key = buildHostSlug(url)
-	if (!key) return ''
-	return cacheUrlAliases.get(key) || ''
+	return combined
 }
 
 async function tryCache(event, url, { isFallback = false, origin = '', last, contentSource = '' } = {}) {
 	progressTracker?.setContext?.(event, { url, isFallback, kind: 'net', origin })
 	progressTracker?.step(event, 'cache', 'start')
-	let cacheUrl = url
-	let aliasUrl = resolveCacheAlias(url)
-	let aliasUsed = false
-	if (aliasUrl && aliasUrl !== url) {
-		cacheUrl = aliasUrl
-		aliasUsed = true
-	}
-	let cacheProbe = probeCache(event, cacheUrl)
+	let cacheProbe = probeCache(event, url)
 	if (!cacheProbe.available) {
 		if (cacheProbe.reason === 'missing') {
 			logEvent(event, {
@@ -986,8 +749,7 @@ async function tryCache(event, url, { isFallback = false, origin = '', last, con
 				cacheKey: cacheProbe.key,
 				cacheUrl: cacheProbe.url,
 			}, `#${event.id} cache miss (no files)`, 'warn')
-			logCacheLine(event, 'miss', { reason: 'no_files', key: cacheProbe.key, url: cacheProbe.url })
-			progressTracker?.step(event, 'cache', 'miss', aliasUsed ? 'alias_no_files' : 'no_files')
+			progressTracker?.step(event, 'cache', 'miss', 'no_files')
 			return { ok: false, cacheMetaHit: false, cacheTextHit: false, reason: 'no_files' }
 		}
 		logEvent(event, {
@@ -995,9 +757,25 @@ async function tryCache(event, url, { isFallback = false, origin = '', last, con
 			status: 'skip',
 			reason: cacheProbe.reason,
 		}, `#${event.id} cache skip (${cacheProbe.reason})`, 'warn')
-		logCacheLine(event, 'skip', { reason: cacheProbe.reason })
 		progressTracker?.step(event, 'cache', 'skipped', cacheProbe.reason || '')
 		return { ok: false, cacheMetaHit: false, cacheTextHit: false, reason: cacheProbe.reason }
+	}
+	let metaStatus = String(cacheProbe.meta?.status || '').toLowerCase()
+	let metaMethod = String(cacheProbe.meta?.method || '')
+	if (['mismatch', 'short', 'blocked'].includes(metaStatus)) {
+		let cachedHtml = cacheProbe?.hasHtml ? readHtmlFromDisk(event, url) : ''
+		let candidateMeta = cachedHtml ? extractMetaFromHtml(cachedHtml) : {}
+		candidateMeta = mergeCandidateMeta(candidateMeta, buildCandidateHints(event))
+		let canonicalUrl = candidateMeta?.canonicalUrl || ''
+		logEvent(event, {
+			phase: 'cache',
+			status: metaStatus,
+			method: metaMethod,
+			cacheKey: cacheProbe.key,
+			cacheUrl: cacheProbe.url,
+		}, `#${event.id} cache status ${metaStatus}`, 'warn')
+		progressTracker?.step(event, 'cache', metaStatus, metaMethod || '')
+		return { ok: false, cached: true, status: metaStatus, method: metaMethod, final: true, candidateMeta, canonicalUrl }
 	}
 	logEvent(event, {
 		phase: 'cache',
@@ -1007,116 +785,111 @@ async function tryCache(event, url, { isFallback = false, origin = '', last, con
 		hasHtml: cacheProbe.hasHtml,
 		hasTxt: cacheProbe.hasTxt,
 	}, `#${event.id} cache probe`, 'info')
-	logCacheLine(event, 'probe', { key: cacheProbe.key, url: cacheProbe.url, hasHtml: cacheProbe.hasHtml, hasTxt: cacheProbe.hasTxt })
 
-	let cacheMetaHit = backfillMetaFromDisk(event, cacheUrl)
-	let cacheTextHit = backfillTextFromDisk(event, cacheUrl)
+	let cacheMetaHit = backfillMetaFromDisk(event, url)
+	let cacheTextHit = backfillTextFromDisk(event, url)
 	let textLength = event.text?.length || 0
-	let shortTextMiss = false
+	let cachedHtml = ''
 	if (cacheTextHit && textLength > 0 && textLength <= minTextLength) {
 		cacheTextHit = false
 		event.text = ''
 	}
 	if (!cacheTextHit) {
-		let cachedHtml = readHtmlFromDisk(event, cacheUrl)
+		cachedHtml = readHtmlFromDisk(event, url)
 		if (cachedHtml) {
 			let extracted = extractText(cachedHtml)
-			if (extracted && extracted.length > minTextLength) {
+			if (extracted) {
 				event.text = extracted
-				cacheTextHit = true
 				textLength = extracted.length
-				writeTextCache(event, extracted, cacheUrl)
+				cacheTextHit = extracted.length > minTextLength
 			}
 		}
 	}
-	if (!cacheTextHit && textLength > 0 && textLength <= minTextLength) {
+	if (cacheTextHit) {
+		progressTracker?.step(event, 'cache', 'ok', metaMethod || '')
+		progressTracker?.logTextSample?.(event, event.text || '')
+	} else if (textLength > 0 && textLength <= minTextLength) {
 		logEvent(event, {
 			phase: 'cache',
-			status: 'miss',
+			status: 'short',
 			reason: 'short_text',
-			cacheUrl: cacheUrl || '',
+			cacheUrl: url || '',
 			cacheKey: cacheProbe?.key,
 			textLength,
-		}, `#${event.id} cache miss (short text)`, 'warn')
-		logCacheLine(event, 'miss', { reason: 'short_text', key: cacheProbe?.key, url: cacheUrl || '' })
-		shortTextMiss = true
-	}
-	if (cacheMetaHit || cacheTextHit) {
-		logEvent(event, {
-			phase: 'cache',
-			status: 'hit',
-			cacheMeta: cacheMetaHit,
-			cacheText: cacheTextHit,
-			cacheUrl: cacheUrl || '',
-			cacheKey: cacheProbe?.key,
-			cacheAliasUsed: aliasUsed,
-		}, `#${event.id} cache hit`, 'info')
-		logCacheLine(event, 'hit', { key: cacheProbe?.key, url: cacheUrl || '', hasHtml: cacheProbe?.hasHtml, hasTxt: cacheProbe?.hasTxt })
-		if (cacheTextHit) {
-			progressTracker?.step(event, 'cache', 'ok', aliasUsed ? 'alias' : '')
-		} else {
-			let note = shortTextMiss ? 'short_text' : (cacheMetaHit ? 'meta_only' : '')
-			if (aliasUsed) note = note ? `alias_${note}` : 'alias_meta'
-			progressTracker?.step(event, 'cache', 'miss', note)
-		}
-	} else if (!shortTextMiss && !isBlank(url) && (!event.text || event.text.length <= minTextLength)) {
+		}, `#${event.id} cache short text`, 'warn')
+		writeCacheMeta(event, url, { status: 'short', method: metaMethod || 'cache', textLength })
+		progressTracker?.step(event, 'cache', 'short', `len=${textLength}`)
+		return { ok: false, cacheMetaHit, cacheTextHit: false, status: 'short', final: true }
+	} else {
 		logEvent(event, {
 			phase: 'cache',
 			status: 'miss',
-			cacheUrl: cacheUrl || '',
+			reason: cacheMetaHit ? 'meta_only' : 'no_text',
+			cacheUrl: url || '',
 			cacheKey: cacheProbe?.key,
 		}, `#${event.id} cache miss`, 'warn')
-		logCacheLine(event, 'miss', { key: cacheProbe?.key, url: cacheUrl || '' })
-		progressTracker?.step(event, 'cache', 'miss', aliasUsed ? 'alias_miss' : '')
+		progressTracker?.step(event, 'cache', 'miss', cacheMetaHit ? 'meta_only' : 'no_text')
+		return { ok: false, cacheMetaHit, cacheTextHit: false, reason: 'no_text' }
 	}
 
-	if (event.text?.length > minTextLength) {
-		progressTracker?.setContext?.(event, { url, isFallback, kind: 'net', origin })
-		progressTracker?.setWinnerContext?.(event, { url, isFallback, kind: 'net', origin })
-		progressTracker?.setContextContent?.(event, { status: 'ready', method: 'cache', ms: 0 })
-		let verify = await verifyText({
-			event,
-			url,
-			text: event.text,
-			isFallback,
-			method: 'cache',
-			attempt: 0,
-			last,
-			contextKind: 'net',
-		})
-		if (verify?.ok) {
-			let overallStatus = verify?.status === 'skipped' ? 'skipped' : (verify?.status === 'unverified' ? 'unverified' : 'ok')
-			if (Number.isFinite(verify?.durationMs)) {
-				progressTracker?.setDuration?.(event, 'verify', verify.durationMs)
-			}
-			progressTracker?.step(event, 'verify', overallStatus, 'cache')
-			applyVerifyStatus(event, verify)
-			setContentSource(event, {
-				url,
-				source: contentSource || event._originalSource || event.source || '',
-				method: 'cache',
-				isFallback,
-			})
-			return { ok: true, cacheMetaHit, cacheTextHit, verify }
+	let candidateMeta = cachedHtml ? extractMetaFromHtml(cachedHtml) : {}
+	candidateMeta = mergeCandidateMeta(candidateMeta, buildCandidateHints(event))
+
+	progressTracker?.setContext?.(event, { url, isFallback, kind: 'net', origin })
+	progressTracker?.setWinnerContext?.(event, { url, isFallback, kind: 'net', origin })
+	progressTracker?.setContextContent?.(event, { status: 'ready', method: 'cache', ms: 0 })
+	let verify = await verifyText({
+		event,
+		url,
+		text: event.text,
+		isFallback,
+		method: 'cache',
+		attempt: 0,
+		last,
+		contextKind: 'net',
+		candidateMeta,
+	})
+	if (verify?.ok) {
+		let overallStatus = verify?.status === 'skipped' ? 'skipped' : (verify?.status === 'unverified' ? 'unverified' : 'ok')
+		if (Number.isFinite(verify?.durationMs)) {
+			progressTracker?.setDuration?.(event, 'verify', verify.durationMs)
 		}
+		let verifyNote = formatVerifyNote(verify)
+		let note = 'cache'
+		if (verifyNote) note = `${note} ${verifyNote}`
+		progressTracker?.step(event, 'verify', overallStatus, note)
+		applyVerifyStatus(event, verify)
+		setContentSource(event, {
+			url,
+			source: contentSource || event._originalSource || event.source || '',
+			method: 'cache',
+			isFallback,
+		})
+		if (cachedHtml) {
+			saveArticle(event, cachedHtml || '', event.text || '', url, { status: 'ok', method: 'cache' })
+		} else {
+			writeCacheMeta(event, url, { status: 'ok', method: 'cache', textLength: event.text?.length || 0 })
+		}
+		return { ok: true, cacheMetaHit, cacheTextHit, verify, candidateMeta, canonicalUrl: candidateMeta?.canonicalUrl || '' }
+	}
+	if (verify?.status === 'mismatch') {
 		logEvent(event, {
 			phase: 'cache_verify',
 			status: 'mismatch',
 			reason: verify?.reason,
 			pageSummary: verify?.pageSummary,
 		}, `#${event.id} cached text mismatch`, 'warn')
-		logEvent(event, {
-			phase: 'cache',
-			status: 'reject',
-			reason: 'verify_mismatch',
-		}, `#${event.id} cache rejected (verify mismatch)`, 'warn')
-		logCacheLine(event, 'reject', { reason: 'verify_mismatch', key: cacheProbe?.key, url: url || '' })
 		progressTracker?.step(event, 'cache', 'mismatch')
 		progressTracker?.setContextContent?.(event, { status: 'mismatch', method: 'cache', ms: 0 })
+		if (cachedHtml) {
+			saveArticle(event, cachedHtml || '', event.text || '', url, { status: 'mismatch', method: 'cache', mutateEvent: false })
+		} else {
+			writeCacheMeta(event, url, { status: 'mismatch', method: 'cache', textLength: event.text?.length || 0 })
+		}
 		resetTextFields(event)
-		return { ok: false, cacheMetaHit, cacheTextHit, mismatch: true }
+		return { ok: false, cacheMetaHit, cacheTextHit, mismatch: true, status: 'mismatch', candidateMeta, canonicalUrl: candidateMeta?.canonicalUrl || '' }
 	}
-	return { ok: false, cacheMetaHit, cacheTextHit, reason: 'no_text' }
+	return { ok: false, cacheMetaHit, cacheTextHit, reason: 'verify_failed', candidateMeta, canonicalUrl: candidateMeta?.canonicalUrl || '' }
 }
 
 async function decodeUrl(gnUrl, last) {
@@ -1139,113 +912,6 @@ async function decodeUrl(gnUrl, last) {
 	return await decodeGoogleNewsUrl(gnUrl)
 }
 
-function extractJsonText(document) {
-	let scripts = [...document.querySelectorAll('script[type="application/ld+json"]')]
-	if (!scripts.length) return
-	let buckets = { body: [], text: [], desc: [] }
-	let seen = new Set()
-	let collect = node => {
-		if (!node || seen.has(node)) return
-		if (typeof node === 'string') return
-		if (Array.isArray(node)) {
-			node.forEach(collect)
-			return
-		}
-		if (typeof node !== 'object') return
-		seen.add(node)
-		if (typeof node.articleBody === 'string') buckets.body.push(node.articleBody)
-		if (typeof node.text === 'string') buckets.text.push(node.text)
-		if (typeof node.description === 'string') buckets.desc.push(node.description)
-		Object.values(node).forEach(collect)
-	}
-	for (let script of scripts) {
-		let raw = script.textContent?.trim()
-		if (!raw) continue
-		try {
-			collect(JSON.parse(raw))
-		} catch {
-			continue
-		}
-	}
-	let pick = list => list.sort((a, b) => b.length - a.length)[0]
-	let candidate =
-		pick(buckets.body) ||
-		pick(buckets.text) ||
-		pick(buckets.desc)
-	if (candidate && candidate.length > minTextLength) return candidate.trim()
-}
-
-function classifyPageState(html, meta = {}) {
-	let title = meta?.title || meta?.metaTitle || ''
-	return classifyHtmlState(html || '', title || '')
-}
-
-function extractDomText(document) {
-	const selectors = [
-		'[itemprop="articleBody"]',
-		'article',
-		'main',
-		'.article-body',
-		'.article-body__content',
-		'.story-body',
-		'.content__article-body',
-		'.ArticleBody',
-		'.ArticleBody-articleBody',
-	]
-	let best = ''
-	for (let selector of selectors) {
-		let nodes = [...document.querySelectorAll(selector)]
-		for (let node of nodes) {
-			let text = safeHtmlToText(node.innerHTML || '')
-			if (text && text.length > best.length) {
-				best = text
-			}
-		}
-	}
-	if (best.length > minTextLength) return best
-}
-
-function stripHtmlFast(html, limit = maxHtmlToTextChars) {
-	let input = html || ''
-	if (limit && input.length > limit) input = input.slice(0, limit)
-	let text = input.replace(/<[^>]+>/g, ' ')
-	text = text.replace(/\s+/g, ' ').trim()
-	return text
-}
-
-function safeHtmlToText(html) {
-	if (!html) return ''
-	if (html.length > maxHtmlToTextChars) {
-		log('html too large for html-to-text', html.length, 'chars')
-		return stripHtmlFast(html)
-	}
-	try {
-		return htmlToText(html)?.trim() || ''
-	} catch (error) {
-		log('html-to-text failed', error?.message || error)
-		return stripHtmlFast(html)
-	}
-}
-
-function extractText(html) {
-	if (!html) return
-	let cleaned = html.replace(/<style[\s\S]*?<\/style>/gi, '')
-	if (!/<[a-z][\s\S]*>/i.test(cleaned)) {
-		let plain = cleaned.trim()
-		if (plain.length > minTextLength) return plain
-	}
-	try {
-		let dom = new JSDOM(cleaned, { virtualConsole: jsdomVirtualConsole })
-		let doc = dom.window.document
-		let jsonText = extractJsonText(doc)
-		if (jsonText) return jsonText
-		let domText = extractDomText(doc)
-		if (domText) return domText
-	} catch {}
-	let text = safeHtmlToText(cleaned)
-	if (!text || text.length <= minTextLength) return
-	return text
-}
 
 function formatDuration(ms) {
 	if (!Number.isFinite(ms) || ms <= 0) return ''
@@ -1265,6 +931,25 @@ function formatCountdown(ms) {
 	return `${seconds}s`
 }
 
+function formatVerifyNote(result) {
+	if (!result) return ''
+	let parts = []
+	if (Number.isFinite(result.confidence)) parts.push(`conf=${result.confidence.toFixed(2)}`)
+	if (result.reason) parts.push(`reason=${truncate(String(result.reason), 120)}`)
+	return parts.join(' ')
+}
+
+const fetchTextWithRetry = createFetchTextWithRetry({
+	fetchArticle,
+	browseArticle,
+	verifyText,
+	logEvent,
+	getLastFetchStatus,
+	applyContentMeta,
+	formatVerifyNote,
+	getProgressTracker: () => progressTracker,
+})
+
 async function sleepWithCountdown(totalMs, onTick, intervalMs = 1000) {
 	let start = Date.now()
 	let remaining = Math.max(0, totalMs || 0)
@@ -1279,7 +964,12 @@ async function sleepWithCountdown(totalMs, onTick, intervalMs = 1000) {
 
 
 
-async function verifyText({ event, url, text, isFallback, method, attempt, last, contextKind = 'net', progress = true }) {
+async function verifyText({ event, url, text, isFallback, method, attempt, last, contextKind = 'net', progress = true, candidateMeta }) {
+	const clampPromptField = value => {
+		if (value === null || value === undefined) return ''
+		let raw = String(value)
+		return raw.length > 100 ? raw.slice(0, 100) : raw
+	}
 	if (progress) {
 		progressTracker?.setContext?.(event, { url, isFallback, kind: contextKind })
 		progressTracker?.setContextVerify?.(event, { status: 'start', ms: 0 })
@@ -1287,6 +977,11 @@ async function verifyText({ event, url, text, isFallback, method, attempt, last,
 	let waitMs = 0
 	let prepareMs = 0
 	let aiMs = 0
+	let rawTextLength = Number.isFinite(text?.length) ? text.length : 0
+	let primaryLimit = Number.isFinite(verifyMaxChars) && verifyMaxChars > 0 ? verifyMaxChars : 0
+	let sentTextLength = primaryLimit ? Math.min(rawTextLength, primaryLimit) : rawTextLength
+	let fallbackLimit = Number.isFinite(verifyFallbackMaxChars) && verifyFallbackMaxChars > 0 ? verifyFallbackMaxChars : 0
+	let fallbackSentLength = fallbackLimit ? Math.min(rawTextLength, fallbackLimit) : rawTextLength
 	if (!shouldVerify({ isFallback, textLength: text.length })) {
 		let durationMs = 0
 		logEvent(event, {
@@ -1325,11 +1020,54 @@ async function verifyText({ event, url, text, isFallback, method, attempt, last,
 	let context = await buildVerifyContext(event)
 	prepareMs = Date.now() - prepareStart
 	if (progress) progressTracker?.setContextPrepare?.(event, { status: 'ok', ms: prepareMs })
+	if (logging.includeVerifyPrompt) {
+		try {
+			let candidate = { ...(candidateMeta && typeof candidateMeta === 'object' ? candidateMeta : {}) }
+			if (!candidate.textSnippet && candidate.description) candidate.textSnippet = candidate.description
+			if (!candidate.textSnippet) candidate.textSnippet = formatTextSample(text, 400)
+			candidate.url = url
+			candidate.text = text
+			let promptOriginal = {
+				title: clampPromptField(context?.title || ''),
+				description: clampPromptField(context?.description || ''),
+				keywords: clampPromptField(context?.keywords || ''),
+				date: clampPromptField(context?.date || ''),
+				source: clampPromptField(context?.source || ''),
+				url: clampPromptField(context?.url || ''),
+				gnUrl: clampPromptField(context?.gnUrl || ''),
+			}
+			let promptCandidate = {
+				title: clampPromptField(candidate?.title || ''),
+				description: clampPromptField(candidate?.description || ''),
+				keywords: clampPromptField(candidate?.keywords || ''),
+				date: clampPromptField(candidate?.date || ''),
+				source: clampPromptField(candidate?.source || ''),
+				url: clampPromptField(candidate?.url || ''),
+				gnUrl: clampPromptField(candidate?.gnUrl || ''),
+				textSnippet: clampPromptField(candidate?.textSnippet || ''),
+				text: clampPromptField(candidate?.text || ''),
+			}
+			let payload = {
+				original: promptOriginal,
+				candidate: promptCandidate,
+			}
+			let raw = JSON.stringify(payload, null, 2)
+			let maxChars = Number.isFinite(logging.verifyPromptMaxChars) ? logging.verifyPromptMaxChars : 0
+			let trimmed = maxChars > 0 ? truncate(raw, maxChars) : raw
+			let prefix = getLogPrefix(event)
+			runLogger.logLine('', `${prefix} verify_payload ${trimmed}`)
+		} catch {}
+	}
 	const verifyStarted = Date.now()
 	let aiStart = Date.now()
+	let candidate = { ...(candidateMeta && typeof candidateMeta === 'object' ? candidateMeta : {}) }
+	if (!candidate.textSnippet && candidate.description) candidate.textSnippet = candidate.description
+	if (!candidate.textSnippet) candidate.textSnippet = formatTextSample(text, 400)
+	candidate.url = url
+	candidate.text = text
 	let result = await verifyArticle({
 		original: context,
-		candidate: { url, text },
+		candidate,
 		minConfidence: verifyMinConfidence,
 		failOpen: verifyFailOpen,
 		debug: logging.includeVerifyPrompt,
@@ -1345,10 +1083,18 @@ async function verifyText({ event, url, text, isFallback, method, attempt, last,
 	if (modelLabel && result?.fallbackUsed) modelLabel = `${modelLabel}+fallback`
 	let status = result?.status || (result?.ok ? 'ok' : (result?.error ? 'error' : 'mismatch'))
 	let summarySnippet = result?.pageSummary ? ` | ${truncate(result.pageSummary)}` : ''
+	let lengthNote = rawTextLength
+		? ` textLen=${rawTextLength}${sentTextLength !== rawTextLength ? `->${sentTextLength}` : ''}`
+		: ''
 	let errorMessage = result?.error ? String(result.error?.message || result.error) : undefined
 	let statusMessage = status === 'unverified' ? 'unverified (gpt unavailable)' : status
 	let durationMs = Date.now() - verifyStarted
 	let verifyNote = ''
+	let verifyScope = verifyProvider === 'xai' ? 'xai' : 'openai'
+	let guidance = result?.error
+		? describeError(result.error, { scope: verifyScope })
+		: (status === 'unverified' || status === 'error' ? describeError({ reason: status }, { scope: verifyScope }) : null)
+	let action = guidance?.action ? ` | action: ${guidance.action}` : ''
 	logEvent(event, {
 		phase: 'verify',
 		status,
@@ -1369,14 +1115,32 @@ async function verifyText({ event, url, text, isFallback, method, attempt, last,
 		verifyTemperature: verifyDebug?.temperature,
 		verifyUseSearch: useSearch,
 		verifyFallback: result?.fallbackUsed || verifyDebug?.fallbackUsed,
+		verifyProvider: result?.provider,
+		verifyProviderFallbackUsed: result?.providerFallbackUsed,
 		verifyFallbackMaxChars: verifyDebug?.fallbackMaxChars,
 		verifyFallbackContextMaxChars: verifyDebug?.fallbackContextMaxChars,
+		verifyTextLengthRaw: rawTextLength,
+		verifyTextLengthSent: sentTextLength,
+		verifyTextLengthFallback: (result?.fallbackUsed || verifyDebug?.fallbackUsed) ? fallbackSentLength : undefined,
+		verifyTextLimit: primaryLimit || undefined,
+		verifyFallbackTextLimit: fallbackLimit || undefined,
 		verifySystem: verifyDebug?.system,
 		verifyPrompt: verifyDebug?.prompt,
-	}, `#${event.id} verify ${statusMessage} (${method})${summarySnippet}`, result?.ok ? 'ok' : 'warn')
+		action: guidance?.action,
+	}, `#${event.id} verify ${statusMessage} (${method})${lengthNote}${summarySnippet}${action}`, result?.ok ? 'ok' : 'warn')
 	let contextStatus = status === 'unverified' ? 'unverified' : (result?.ok ? 'ok' : status)
 	if (progress) {
 		progressTracker?.setContextVerify?.(event, { status: contextStatus, ms: durationMs, note: verifyNote, model: modelLabel })
+	}
+	if (!verifyFailOpen && (status === 'error' || status === 'unverified')) {
+		let summary = guidance?.summary || errorMessage || status
+		let message = summary ? `verify unavailable: ${summary}` : 'verify unavailable'
+		let fatal = new Error(message)
+		fatal.code = 'VERIFY_FATAL'
+		fatal.action = guidance?.action
+		fatal.status = status
+		fatal.model = modelName || verifyModel
+		throw fatal
 	}
 	result.durationMs = durationMs
 	result.verifyNote = verifyNote
@@ -1385,301 +1149,12 @@ async function verifyText({ event, url, text, isFallback, method, attempt, last,
 	return result
 }
 
-async function fetchTextWithRetry(event, url, last, { isFallback = false, origin = '' } = {}) {
-	let foundText = false
-	let lastPageState = null
-	const normalizeFetchStatus = value => {
-		if (value === null || value === undefined) return ''
-		if (typeof value === 'number') return value
-		let text = String(value).trim().toLowerCase()
-		if (/^\d+$/.test(text)) return Number(text)
-		return text
-	}
-	const isNonRetryableStatus = status => {
-		return status === 429 || status === 403 || status === 503 || status === 'captcha'
-	}
-	progressTracker?.setContext?.(event, { url, isFallback, kind: 'net', origin })
-	let lastFailureStatus = null
-	let lastFailureMethod = null
-	for (let attempt = 1; attempt <= fetchAttempts; attempt++) {
-		let blockedStatus = null
-		let mismatchResult = null
-		let mismatchHtml = null
-		let mismatchText = null
-		let browsePromise = null
-		let browseStarted = false
-		let fetchMethod = ''
-		let fetchMeta = null
-		let onFetchMethod = method => {
-			fetchMethod = method
-			if (method === 'fetch' || method === 'jina') lastFailureMethod = method
-			if (method === 'fetch') progressTracker?.step(event, 'fetch', 'ok')
-			if (method === 'jina') progressTracker?.step(event, 'jina', 'ok')
-			if (method === 'captcha') {
-				lastFailureStatus = 'captcha'
-				lastFailureMethod = 'fetch'
-				progressTracker?.step(event, 'fetch', 'captcha')
-				let durationMs = progressTracker?.getDuration?.(event, 'fetch')
-				progressTracker?.setContextContent?.(event, { status: 'captcha', method: 'fetch', ms: durationMs })
-			}
-			if (method === 'timeout') {
-				lastFailureStatus = 'timeout'
-				lastFailureMethod = 'fetch'
-				progressTracker?.step(event, 'fetch', 'timeout')
-				let durationMs = progressTracker?.getDuration?.(event, 'fetch')
-				progressTracker?.setContextContent?.(event, { status: 'timeout', method: 'fetch', ms: durationMs })
-			}
-		}
-		let updateContentFromMethod = methodLabel => {
-			if (!methodLabel) return
-			let normalized = String(methodLabel).toLowerCase()
-			let durationMs = null
-			if (normalized === 'cache') durationMs = 0
-			else if (normalized === 'fetch') durationMs = progressTracker?.getDuration?.(event, 'fetch')
-			else if (normalized === 'jina') durationMs = progressTracker?.getDuration?.(event, 'jina')
-			else if (normalized === 'browse' || normalized === 'playwright') durationMs = progressTracker?.getDuration?.(event, 'playwright')
-			if (Number.isFinite(durationMs)) progressTracker?.setDuration?.(event, 'content', durationMs)
-			progressTracker?.setContextContent?.(event, { status: 'ok', method: methodLabel, ms: durationMs })
-			progressTracker?.step(event, 'content', 'ok', methodLabel)
-		}
-		let startBrowse = async () => {
-			browseStarted = true
-			let html = ''
-			let meta = {}
-			let browseFailed = false
-			progressTracker?.step(event, 'playwright', 'start')
-			try {
-				let result = await browseArticle(url, { ignoreCooldown: !isFallback })
-				if (result && typeof result === 'object') {
-					html = result.html || ''
-					meta = result.meta || {}
-				} else {
-					html = result || ''
-				}
-			} catch (error) {
-				if (error?.code === 'BROWSER_CLOSED') throw error
-				if (error?.code === 'CAPTCHA') {
-					logEvent(event, {
-						phase: 'browse',
-						method: 'browse',
-						status: 'captcha',
-						attempt,
-					}, `#${event.id} browse captcha`, 'warn')
-					progressTracker?.step(event, 'playwright', 'captcha')
-					let durationMs = progressTracker?.getDuration?.(event, 'playwright')
-					progressTracker?.setContextContent?.(event, { status: 'captcha', method: 'playwright', ms: durationMs })
-					return { html: '', meta: {}, browseFailed: false, aborted: true, abortReason: 'captcha' }
-				}
-				if (error?.code === 'TIMEOUT') {
-					logEvent(event, {
-						phase: 'browse',
-						method: 'browse',
-						status: 'timeout',
-						attempt,
-					}, `#${event.id} browse timeout`, 'warn')
-					progressTracker?.step(event, 'playwright', 'timeout')
-					let durationMs = progressTracker?.getDuration?.(event, 'playwright')
-					progressTracker?.setContextContent?.(event, { status: 'timeout', method: 'playwright', ms: durationMs })
-					return { html: '', meta: {}, browseFailed: true, aborted: true, abortReason: 'timeout' }
-				}
-				browseFailed = true
-				logEvent(event, {
-					phase: 'browse',
-					method: 'browse',
-					status: 'error',
-					error: error?.message || String(error),
-					errorCode: error?.code || '',
-				}, `#${event.id} browse failed`, 'warn')
-				html = ''
-				return { html: '', meta: {}, browseFailed: true, aborted: true, abortReason: 'error' }
-			}
-			return { html, meta, browseFailed }
-		}
-		progressTracker?.step(event, 'fetch', 'start')
-		let html = await fetchArticle(url, { onMethod: onFetchMethod })
-		if (html) fetchMeta = extractMetaFromHtml(html)
-		let lastStatus = getLastFetchStatus(url)
-		let text = extractText(html)
-		let fetchState = classifyPageState(html, fetchMeta)
-		lastPageState = fetchState
-		let normalizedStatus = normalizeFetchStatus(lastStatus || lastFailureStatus)
-		if (!text && isNonRetryableStatus(normalizedStatus)) {
-			let statusLabel = normalizedStatus === 'captcha'
-				? 'captcha'
-				: (normalizedStatus === 429 || normalizedStatus === 503 ? 'rate_limited' : 'forbidden')
-			logEvent(event, {
-				phase: 'fetch',
-				method: 'fetch',
-				status: statusLabel,
-				attempt,
-				httpStatus: typeof normalizedStatus === 'number' ? normalizedStatus : undefined,
-			}, `#${event.id} fetch ${statusLabel} (${normalizedStatus})`, 'warn')
-			if (statusLabel === 'rate_limited') progressTracker?.step(event, 'fetch', 'rate_limit')
-			else if (statusLabel === 'captcha') progressTracker?.step(event, 'fetch', 'captcha')
-			else progressTracker?.step(event, 'fetch', 'error')
-			lastFailureStatus = statusLabel
-			lastFailureMethod = 'fetch'
-			blockedStatus = normalizedStatus
-			let durationMs = progressTracker?.getDuration?.(event, 'fetch') || 0
-			progressTracker?.setContextContent?.(event, {
-				status: statusLabel === 'forbidden' ? 'error' : (statusLabel === 'rate_limited' ? 'rate_limit' : 'captcha'),
-				method: 'fetch',
-				ms: durationMs,
-			})
-			progressTracker?.step(event, 'content', statusLabel === 'forbidden' ? 'error' : (statusLabel === 'rate_limited' ? 'rate_limit' : 'captcha'), 'fetch')
-		}
-		if (!text && lastStatus === 504) {
-			progressTracker?.step(event, 'fetch', '504')
-			lastFailureStatus = '504'
-			lastFailureMethod = 'fetch'
-		}
-		if (!text && lastStatus === 'timeout') {
-			progressTracker?.step(event, 'fetch', 'timeout')
-			lastFailureStatus = 'timeout'
-			lastFailureMethod = 'fetch'
-		}
-		if (!text && lastStatus === 'captcha') {
-			progressTracker?.step(event, 'fetch', 'captcha')
-			lastFailureStatus = 'captcha'
-			lastFailureMethod = 'fetch'
-		}
-		if (!text && !lastFailureStatus) {
-			progressTracker?.step(event, 'fetch', 'no_text')
-			lastFailureStatus = 'no_text'
-			lastFailureMethod = 'fetch'
-		}
-		if (text) {
-			foundText = true
-			logEvent(event, {
-				phase: 'fetch',
-				method: fetchMethod || 'fetch',
-				status: 'ok',
-				attempt,
-				textLength: text.length,
-			}, `#${event.id} ${(fetchMethod || 'fetch')} ok (${attempt}/${fetchAttempts})`, 'ok')
-			let methodLabel = fetchMethod || 'fetch'
-			if (fetchMethod !== 'jina') progressTracker?.step(event, 'jina', 'skipped', 'not used')
-			progressTracker?.step(event, 'playwright', 'skipped', 'fetch ok')
-			updateContentFromMethod(methodLabel)
-			let verify = await verifyText({ event, url, text, isFallback, method: methodLabel, attempt, last, contextKind: 'net' })
-			if (verify?.ok) {
-				let overallStatus = verify?.status === 'skipped' ? 'skipped' : (verify?.status === 'unverified' ? 'unverified' : 'ok')
-				if (Number.isFinite(verify?.durationMs)) {
-					progressTracker?.setDuration?.(event, 'verify', verify.durationMs)
-				}
-				progressTracker?.step(event, 'verify', overallStatus, methodLabel)
-				if (fetchMeta && Object.values(fetchMeta).some(Boolean)) {
-					applyContentMeta(event, fetchMeta, methodLabel)
-				}
-				return { ok: true, html, text, verify, method: methodLabel, url }
-			}
-			if (verify?.status === 'mismatch') {
-				mismatchResult = verify
-				mismatchHtml = html
-				mismatchText = text
-			}
-		} else {
-			logEvent(event, {
-				phase: 'fetch',
-				method: 'fetch',
-				status: 'no_text',
-				attempt,
-				pageState: fetchState?.state || '',
-				pageStateReason: fetchState?.reason || '',
-			}, `#${event.id} fetch no text (${attempt}/${fetchAttempts})`, 'warn')
-		}
-
-		if (mismatchResult && !summarizeConfig.browseOnMismatch) {
-			progressTracker?.step(event, 'playwright', 'skipped', 'mismatch')
-			return { ok: false, mismatch: true, verify: mismatchResult, html: mismatchHtml, text: mismatchText }
-		}
-
-		if (!browsePromise) browsePromise = startBrowse()
-		let browseResult = await browsePromise
-		html = browseResult?.html || ''
-		let browseMeta = browseResult?.meta || {}
-		if (!browseMeta || !Object.values(browseMeta).some(Boolean)) {
-			browseMeta = html ? extractMetaFromHtml(html) : {}
-		}
-		let browseState = classifyPageState(html, browseMeta)
-		lastPageState = browseState
-		let browseFailed = Boolean(browseResult?.browseFailed)
-		text = extractText(html)
-		if (!text && browseResult?.aborted && browseResult?.abortReason) {
-			lastFailureStatus = browseResult.abortReason
-			lastFailureMethod = 'playwright'
-		}
-		if (text) {
-			foundText = true
-			logEvent(event, {
-				phase: 'fetch',
-				method: 'browse',
-				status: 'ok',
-				attempt,
-				textLength: text.length,
-			}, `#${event.id} browse ok (${attempt}/${fetchAttempts})`, 'ok')
-			progressTracker?.step(event, 'playwright', 'ok')
-			updateContentFromMethod('browse')
-			let verify = await verifyText({ event, url, text, isFallback, method: 'browse', attempt, last, contextKind: 'net' })
-			if (verify?.ok) {
-				let overallStatus = verify?.status === 'skipped' ? 'skipped' : (verify?.status === 'unverified' ? 'unverified' : 'ok')
-				if (Number.isFinite(verify?.durationMs)) {
-					progressTracker?.setDuration?.(event, 'verify', verify.durationMs)
-				}
-				progressTracker?.step(event, 'verify', overallStatus, 'browse')
-				if (browseMeta && Object.values(browseMeta).some(Boolean)) {
-					applyContentMeta(event, browseMeta, 'browse')
-				}
-				return { ok: true, html, text, verify, method: 'browse', url }
-			}
-			if (verify?.status === 'mismatch') {
-				mismatchResult = verify
-				mismatchHtml = html
-				mismatchText = text
-			}
-		} else if (!browseFailed && !browseResult?.aborted) {
-			logEvent(event, {
-				phase: 'fetch',
-				method: 'browse',
-				status: 'no_text',
-				attempt,
-				pageState: browseState?.state || '',
-				pageStateReason: browseState?.reason || '',
-			}, `#${event.id} browse no text (${attempt}/${fetchAttempts})`, 'warn')
-			progressTracker?.step(event, 'playwright', 'no_text')
-		}
-
-		if (mismatchResult) {
-			return { ok: false, mismatch: true, verify: mismatchResult, html: mismatchHtml, text: mismatchText }
-		}
-		log(`article text missing (${attempt}/${fetchAttempts})`)
-		if (blockedStatus) {
-			return { ok: false, blocked: true, status: blockedStatus }
-		}
-	}
-	if (!foundText) {
-		let finalStatus = lastFailureStatus || 'no_text'
-		let finalMethod = lastFailureMethod || 'fetch'
-		let durationMs = 0
-		if (finalMethod === 'fetch') durationMs = progressTracker?.getDuration?.(event, 'fetch') || 0
-		else if (finalMethod === 'jina') durationMs = progressTracker?.getDuration?.(event, 'jina') || 0
-		else if (finalMethod === 'playwright') durationMs = progressTracker?.getDuration?.(event, 'playwright') || 0
-		progressTracker?.setContextContent?.(event, { status: finalStatus, method: finalMethod, ms: durationMs })
-		progressTracker?.step(event, 'content', finalStatus, finalMethod)
-		logEvent(event, {
-			phase: 'fetch',
-			status: 'no_text',
-			attempts: fetchAttempts,
-			pageState: lastPageState?.state || '',
-			pageStateReason: lastPageState?.reason || '',
-		}, `#${event.id} no text after ${fetchAttempts} attempts`, 'warn')
-	}
-}
 
 export async function summarize() {
 	const wasSuppressAll = globalThis.__LOG_SUPPRESS_ALL === true
 	globalThis.__LOG_SUPPRESS_ALL = true
 	pauseAutoSave()
+	let stats = { ok: 0, fail: 0 }
 	try {
 		let runStart = Date.now()
 		globalThis.__LOG_SUPPRESS = true
@@ -1702,40 +1177,31 @@ export async function summarize() {
 			metaSectionColumn,
 			metaTagsColumn,
 			metaLangColumn,
-			verifyStatusColumn,
 		])
 
-		let list = news.filter(e => String(e[verifyStatusColumn] || '').toLowerCase() !== 'ok')
-		progressTracker = createProgressTracker(list.length)
+		let list = news.filter(e => (
+			isBlank(e.summary)
+			|| isBlank(e.titleRu)
+			|| isBlank(e.titleEn)
+			|| isBlank(e.topic)
+			|| isBlank(e.priority)
+		))
+		progressTracker = createProgressTracker()
 
-		let stats = { ok: 0, fail: 0 }
 		let failures = []
-		cacheUrlAliases = buildCacheAliasIndex()
 		let last = {
 			urlDecode: { time: 0, delay: 30e3, increment: 1000, maxDelay: 60e3 },
 			ai: { time: 0, delay: 0 },
 			verify: { time: 0, delay: 1000 },
 			gnSearch: { time: 0, delay: 1000, increment: 0 },
 		}
-		let backfilled = 0
-		let backfilledGn = 0
 		for (let i = 0; i < list.length; i++) {
 			let base = list[i]
-			if (String(base?.[verifyStatusColumn] || '').toLowerCase() === 'ok') {
-				log(`#${base.id || i + 1} skipped (verifyStatus=ok)`)
-				continue
-			}
 			let e = cloneEvent(base)
 			let rowIndex = news.indexOf(base) + 1
 			if (!e.id) e.id = base.id || rowIndex
 			captureOriginalContext(e, base)
 			progressTracker?.start(e, i)
-			if (isBlank(e.gnUrl)) {
-				if (await backfillGnUrl(e, last, { logEvent })) backfilledGn++
-			}
-			if (isBlank(e.gnUrl) || isBlank(e.titleEn) || isBlank(e.source)) {
-				await hydrateFromGoogleNews(e, last, { decodeUrl, logEvent })
-			}
 			captureOriginalContext(e, e)
 			e.gnUrl = normalizeUrl(e.gnUrl)
 			if ((isBlank(e.url) || e.url === '') && !isBlank(e.gnUrl) && (!e.text || e.text.length <= minTextLength)) {
@@ -1758,12 +1224,24 @@ export async function summarize() {
 			e.url = normalizeUrl(e.url)
 
 			let cacheResult = await tryCache(e, e.url, { isFallback: false, origin: 'original', last, contentSource: e.source })
-			if (cacheResult?.cacheMetaHit) backfilled++
-			let needsTextFields = isBlank(e.summary) || isBlank(e.titleRu) || isBlank(e.topic) || isBlank(e.priority)
+			if (!cacheResult?.ok && cacheResult?.canonicalUrl) {
+				addInlineCandidate(e, cacheResult.canonicalUrl, {
+					reason: 'canonical',
+					source: cacheResult?.candidateMeta?.source || e.source || '',
+					title: cacheResult?.candidateMeta?.title || '',
+					date: cacheResult?.candidateMeta?.date || '',
+					gnUrl: cacheResult?.candidateMeta?.gnUrl || '',
+				})
+			}
+			let needsTextFields = (
+				isBlank(e.summary)
+				|| isBlank(e.titleRu)
+				|| isBlank(e.titleEn)
+				|| isBlank(e.topic)
+				|| isBlank(e.priority)
+			)
 			let hasText = e.text?.length > minTextLength
-			let contentMethod = e[contentMethodColumn] || e._contentMethod || base?.[contentMethodColumn] || ''
-			let methodNote = contentMethod ? `| method=${contentMethod}` : ''
-			log(`\n#${e.id} [${i + 1}/${list.length}]`, `${titleFor(e)} ${methodNote}`.trim())
+			let skipOriginalFetch = Boolean(cacheResult?.final)
 
 			if ((hasText || !needsTextFields) && isBlank(e.url) && !isBlank(e.gnUrl)) {
 				let decoded = await decodeUrl(e.gnUrl, last)
@@ -1789,87 +1267,105 @@ export async function summarize() {
 			}
 
 			if (needsTextFields && !hasText) {
-				if (!e.url /*&& !restricted.includes(e.source)*/) {
-					e.url = await decodeUrl(e.gnUrl, last)
-					if (!e.url) {
+				let fetched = false
+				if (!skipOriginalFetch) {
+					if (!e.url /*&& !restricted.includes(e.source)*/) {
+						e.url = await decodeUrl(e.gnUrl, last)
+						if (!e.url) {
+							logEvent(e, {
+								phase: 'decode_url',
+								status: 'fail',
+							}, `#${e.id} url decode failed`, 'warn')
+							await sleep(5 * 60e3)
+							i--
+							continue
+						}
+						setOriginalUrlIfMissing(e)
 						logEvent(e, {
 							phase: 'decode_url',
-							status: 'fail',
-						}, `#${e.id} url decode failed`, 'warn')
-						await sleep(5 * 60e3)
-						i--
-						continue
+							status: 'ok',
+							url: e.url,
+						}, `#${e.id} url decoded`, 'ok')
 					}
-					setOriginalUrlIfMissing(e)
-					logEvent(e, {
-						phase: 'decode_url',
-						status: 'ok',
-						url: e.url,
-					}, `#${e.id} url decoded`, 'ok')
-					log('got', e.url)
-				}
 
-				let fetched = false
-				if (e.url) {
-					if (isBlank(e.source) && e.url && !e.url.includes('news.google.com')) {
-						let inferred = sourceFromUrl(e.url)
-						if (inferred) e.source = inferred
-					}
-					log('Fetching', e.source || '', 'article...')
-					let result = await fetchTextWithRetry(e, e.url, last, { origin: 'original' })
-					if (result?.ok) {
-						log('got', result.text.length, 'chars')
-						saveArticle(e, result.html, result.text, result.url || e.url || '')
-						if (isBlank(e.gnUrl)) {
-							await backfillGnUrl(e, last, { logEvent })
+					if (e.url) {
+						if (isBlank(e.source) && e.url && !e.url.includes('news.google.com')) {
+							let inferred = sourceFromUrl(e.url)
+							if (inferred) e.source = inferred
 						}
-						applyVerifyStatus(e, result.verify)
-						setContentSource(e, {
-							url: result.url || e.url || '',
-							source: e.source || '',
-							method: result.method || 'fetch',
-							isFallback: false,
-						})
-						fetched = true
-					} else if (result?.mismatch) {
-						logEvent(e, {
-							phase: 'verify_mismatch',
-							status: 'fail',
-							pageSummary: result?.verify?.pageSummary,
-							reason: result?.verify?.reason,
-						}, `#${e.id} text mismatch, switching to fallback`, 'warn')
+						let result = await fetchTextWithRetry(e, e.url, last, { origin: 'original', candidateHints: buildCandidateHints(e) })
+						if (!result?.ok && result?.canonicalUrl) {
+							addInlineCandidate(e, result.canonicalUrl, {
+								reason: 'canonical',
+								source: result?.meta?.source || e.source || '',
+								title: result?.meta?.title || '',
+								date: result?.meta?.date || '',
+								gnUrl: result?.meta?.gnUrl || '',
+							})
+						}
+						if (result?.ok) {
+							saveArticle(e, result.html, result.text, result.url || e.url || '', { status: 'ok', method: result.method || 'fetch' })
+							applyVerifyStatus(e, result.verify)
+							setContentSource(e, {
+								url: result.url || e.url || '',
+								source: e.source || '',
+								method: result.method || 'fetch',
+								isFallback: false,
+							})
+							fetched = true
+						} else if (result?.mismatch) {
+							e._fallbackReason = 'verify_mismatch'
+							if (result?.html || result?.text) {
+							saveArticle(e, result.html || '', result.text || '', result.url || e.url || '', { status: 'mismatch', method: result.method || 'fetch', mutateEvent: false })
+							} else {
+								writeCacheMeta(e, e.url || '', { status: 'mismatch', method: result.method || 'fetch' })
+							}
+							logEvent(e, {
+								phase: 'verify_mismatch',
+								status: 'fail',
+								pageSummary: result?.verify?.pageSummary,
+								reason: result?.verify?.reason,
+							}, `#${e.id} text mismatch, switching to fallback`, 'warn')
+						} else if (result?.short) {
+							e._fallbackReason = 'short'
+							saveArticle(e, result.html || '', '', result.url || e.url || '', { status: 'short', method: result.method || 'fetch', mutateEvent: false })
+						} else if (result?.blocked) {
+							let blockedReason = result?.status ? `blocked_${result.status}` : 'blocked'
+							e._fallbackReason = blockedReason
+							writeCacheMeta(e, e.url || '', { status: 'blocked', method: result.method || 'fetch' })
+						} else if (!result?.ok) {
+							e._fallbackReason = result?.status || 'no_text'
+						}
 					}
 				}
 
 				if (!fetched) {
-					let alternatives = getAlternativeArticles(e)
-					if (!alternatives.length) {
-						await hydrateFromGoogleNews(e, last, { decodeUrl, logEvent })
+					let fallbackReason = ''
+					if (cacheResult?.final) {
+						fallbackReason = `cache_${cacheResult.status || 'skip'}`
 					}
-					let classified = classifyAlternativeCandidates(e)
-					alternatives = classified.accepted
-					if (classified.accepted.length || classified.rejected.length) {
-						for (let alt of classified.accepted) {
-							logCandidateDecision(e, alt, 'accepted', '', { phase: 'fallback_candidate' })
-						}
-						for (let alt of classified.rejected) {
-							logCandidateDecision(e, alt, 'rejected', alt.reason || 'filtered', { phase: 'fallback_candidate' })
-						}
-					}
-
-					if (!alternatives.length) {
-						logEvent(e, {
-							phase: 'fallback_candidates',
-							status: 'empty',
-						}, `#${e.id} no fallback candidates`, 'warn')
-					}
-
-					let deferredCandidate = null
+					if (fallbackReason) e._fallbackReason = fallbackReason
+					let reasonFromOriginal = e._fallbackReason || ''
 					const logDeferredCandidates = process.env.LOG_DEFERRED === '1'
-					const tryAlternative = async (alt, { allowWait }) => {
+					const tryAlternative = async (alt, { allowWait, reason } = {}) => {
+						let attemptReason = reason || alt?.reason || reasonFromOriginal || ''
 						let altUrl = normalizeUrl(alt.url)
 						let decodeMethod = altUrl ? 'direct' : 'gn'
 						if (!altUrl && alt.gnUrl) {
+							let gnDedup = checkGnCandidateDedup(e, alt.gnUrl)
+							if (gnDedup?.normalized) alt.gnUrl = gnDedup.normalized
+							if (gnDedup?.skip) {
+								logEvent(e, {
+									phase: 'fallback_dedupe',
+									status: 'skip',
+									reason: gnDedup.reason || '',
+									candidateSource: alt.source,
+									level: alt.level,
+									gnUrl: alt.gnUrl,
+								}, `#${e.id} fallback skip (${alt.source})`, 'info')
+								logCandidateDecision(e, alt, 'rejected', gnDedup.reason || 'duplicate', { phase: 'fallback_attempt' })
+								return { fetched: false, skipped: true }
+							}
 							if (!allowWait) {
 								let waitMs = (last.urlDecode.time + last.urlDecode.delay) - Date.now()
 								if (waitMs > 0) {
@@ -1899,8 +1395,38 @@ export async function summarize() {
 							logCandidateDecision(e, alt, 'rejected', 'decode_fail', { phase: 'fallback_attempt' })
 							return { fetched: false }
 						}
+						let dedupe = checkCandidateDedup(e, altUrl)
+						if (dedupe?.normalized) altUrl = dedupe.normalized
+						if (dedupe?.skip) {
+							logEvent(e, {
+								phase: 'fallback_dedupe',
+								status: 'skip',
+								reason: dedupe.reason || '',
+								candidateSource: alt.source,
+								level: alt.level,
+								url: altUrl,
+							}, `#${e.id} fallback skip (${alt.source})`, 'info')
+							logCandidateDecision(e, alt, 'rejected', dedupe.reason || 'duplicate', { phase: 'fallback_attempt' })
+							return { fetched: false, skipped: true }
+						}
+						let cooldown = isDomainInCooldown(altUrl)
+						if (cooldown) {
+							logEvent(e, {
+								phase: 'fallback_filter',
+								status: 'skip',
+								reason: 'domain_cooldown',
+								candidateSource: alt.source,
+								level: alt.level,
+								url: altUrl,
+								host: cooldown.host,
+								remainingMs: cooldown.remainingMs,
+							}, `#${e.id} fallback skip (${alt.source}) domain cooldown`, 'warn')
+							logCandidateDecision(e, alt, 'rejected', 'domain_cooldown', { phase: 'fallback_attempt' })
+							return { fetched: false, skipped: true }
+						}
 						log('Trying alternative source', alt.source, `(level ${alt.level})...`)
-						logCandidateDecision(e, alt, 'attempt', '', { phase: 'fallback_attempt' })
+						if (!alt.url) alt.url = altUrl
+						logCandidateDecision(e, alt, 'attempt', attemptReason, { phase: 'fallback_attempt' })
 						let origin = alt.origin || alt.provider || alt.from || ''
 						logEvent(e, {
 							phase: 'fallback_decode',
@@ -1921,18 +1447,18 @@ export async function summarize() {
 								candidateSource: alt.source,
 								level: alt.level,
 							}, `#${e.id} fallback selected ${alt.source}`, 'ok')
-							logCandidateDecision(e, alt, 'selected', '', { phase: 'fallback_attempt' })
+							logCandidateDecision(e, alt, 'selected', attemptReason, { phase: 'fallback_attempt' })
 							return { fetched: true, cached: true }
 						}
+						if (cacheResult?.final) {
+							logCandidateDecision(e, alt, 'rejected', `cache_${cacheResult.status || 'skip'}`, { phase: 'fallback_attempt' })
+							return { fetched: false, cached: true }
+						}
 
-						let result = await fetchTextWithRetry(e, altUrl, last, { isFallback: true, origin })
+						let result = await fetchTextWithRetry(e, altUrl, last, { isFallback: true, origin, candidateHints: buildCandidateHints(alt) })
 						if (result?.ok) {
 							applyFallbackSelection(e, alt, altUrl)
-							log('got', result.text.length, 'chars')
-							saveArticle(e, result.html, result.text, result.url || altUrl || '')
-							if (isBlank(e.gnUrl)) {
-								await backfillGnUrl(e, last, { logEvent })
-							}
+							saveArticle(e, result.html, result.text, result.url || altUrl || '', { status: 'ok', method: result.method || 'fetch' })
 							applyVerifyStatus(e, result.verify)
 							setContentSource(e, {
 								url: result.url || altUrl || '',
@@ -1947,9 +1473,14 @@ export async function summarize() {
 								candidateSource: alt.source,
 								level: alt.level,
 							}, `#${e.id} fallback selected ${alt.source}`, 'ok')
-							logCandidateDecision(e, alt, 'selected', '', { phase: 'fallback_attempt' })
+							logCandidateDecision(e, alt, 'selected', attemptReason, { phase: 'fallback_attempt' })
 							return { fetched: true }
 						} else if (result?.mismatch) {
+							if (result?.html || result?.text) {
+								saveArticle(e, result.html || '', result.text || '', result.url || altUrl || '', { status: 'mismatch', method: result.method || 'fetch', mutateEvent: false })
+							} else {
+								writeCacheMeta(e, altUrl, { status: 'mismatch', method: result.method || 'fetch' })
+							}
 							logEvent(e, {
 								phase: 'fallback_verify_mismatch',
 								status: 'fail',
@@ -1959,96 +1490,161 @@ export async function summarize() {
 								reason: result?.verify?.reason,
 							}, `#${e.id} fallback text mismatch (${alt.source})`, 'warn')
 							logCandidateDecision(e, alt, 'rejected', 'verify_mismatch', { phase: 'fallback_attempt' })
+						} else if (result?.short) {
+							saveArticle(e, result.html || '', '', result.url || altUrl || '', { status: 'short', method: result.method || 'fetch', mutateEvent: false })
+							logCandidateDecision(e, alt, 'rejected', 'short', { phase: 'fallback_attempt' })
+						} else if (result?.blocked) {
+							writeCacheMeta(e, altUrl, { status: 'blocked', method: result.method || 'fetch' })
+							let blockedReason = result?.status ? `blocked_${result.status}` : 'blocked'
+							logCandidateDecision(e, alt, 'rejected', blockedReason, { phase: 'fallback_attempt' })
 						} else {
-							let reason = result?.blocked
-								? `blocked_${result?.status || 'unknown'}`
-								: (result?.rateLimited ? 'rate_limited' : 'no_text')
+							let reason = result?.status || (result?.rateLimited ? 'rate_limited' : 'no_text')
 							logCandidateDecision(e, alt, 'rejected', reason, { phase: 'fallback_attempt' })
 						}
 						return { fetched: false }
 					}
 
-					for (let j = 0; j < alternatives.length; j++) {
-						let alt = alternatives[j]
-						let res = await tryAlternative(alt, { allowWait: false })
-						if (res?.deferred) {
-							deferredCandidate = alt
-							break
+					let inlineCandidates = Array.isArray(e._inlineCandidates) ? e._inlineCandidates : []
+					if (inlineCandidates.length) {
+						for (let alt of inlineCandidates) {
+							let res = await tryAlternative(alt, { allowWait: true, reason: alt.reason || 'canonical' })
+							if (res?.fetched) {
+								fetched = true
+								break
+							}
 						}
-						if (res?.fetched) break
 					}
-					if (!fetched && deferredCandidate) {
-						let res = await tryAlternative(deferredCandidate, { allowWait: true })
-						if (res?.fetched) fetched = true
-					}
+
 					if (!fetched) {
-						let externalResults = []
-						if (!externalSearch?.enabled) {
+						let alternatives = getAlternativeArticles(e)
+						let classified = null
+						if (!alternatives.length) {
+							let gnResults = await fetchGnCandidates(e, last)
+							classified = classifyAlternativeCandidates(e, gnResults)
+							alternatives = classified.accepted
+						}
+						if (!classified) {
+							classified = classifyAlternativeCandidates(e, alternatives)
+							alternatives = classified.accepted
+						}
+						if (classified.accepted.length || classified.rejected.length) {
+							for (let alt of classified.accepted) {
+								logCandidateDecision(e, alt, 'accepted', e._fallbackReason || '', { phase: 'fallback_candidate' })
+							}
+							for (let alt of classified.rejected) {
+								logCandidateDecision(e, alt, 'rejected', alt.reason || 'filtered', { phase: 'fallback_candidate' })
+							}
+						}
+
+						if (!alternatives.length) {
 							logEvent(e, {
-								phase: 'external_search',
-								status: 'skipped',
-								reason: 'disabled',
-								provider: externalSearch?.provider || '',
-							}, `#${e.id} external search skipped (disabled)`, 'warn')
-						} else if (!externalSearch.apiKey) {
-							logEvent(e, {
-								phase: 'external_search',
-								status: 'skipped',
-								reason: 'missing_api_key',
-								provider: externalSearch.provider,
-							}, `#${e.id} external search skipped (missing api key)`, 'warn')
-						} else {
-							let queries = buildFallbackSearchQueries(e)
-							if (!queries.length) {
+								phase: 'fallback_candidates',
+								status: 'empty',
+							}, `#${e.id} no fallback candidates`, 'warn')
+						}
+
+						let deferredCandidate = null
+
+						for (let j = 0; j < alternatives.length; j++) {
+							let alt = alternatives[j]
+							let res = await tryAlternative(alt, { allowWait: false })
+							if (res?.deferred) {
+								deferredCandidate = alt
+								break
+							}
+							if (res?.fetched) break
+						}
+						if (!fetched && deferredCandidate) {
+							let res = await tryAlternative(deferredCandidate, { allowWait: true })
+							if (res?.fetched) fetched = true
+						}
+						if (!fetched) {
+							let externalResults = []
+							if (!externalSearch?.enabled) {
 								logEvent(e, {
-									phase: 'external_search',
+									phase: 'serpapi_search',
 									status: 'skipped',
-									reason: 'no_queries',
+									reason: 'disabled',
+									provider: externalSearch?.provider || '',
+								}, `#${e.id} serpapi search skipped (disabled)`, 'warn')
+							} else if (!externalSearch.apiKey) {
+								logEvent(e, {
+									phase: 'serpapi_search',
+									status: 'skipped',
+									reason: 'missing_api_key',
 									provider: externalSearch.provider,
-								}, `#${e.id} external search skipped (no queries)`, 'warn')
+								}, `#${e.id} serpapi search skipped (missing api key)`, 'warn')
 							} else {
-								for (let query of queries) {
-									logSearchQuery(e, { phase: 'external_search', provider: externalSearch.provider, query })
-									let results = await searchExternal(query)
-									logSearchResults(e, { phase: 'external_search', provider: externalSearch.provider, query, results })
-									if (results.length) externalResults.push(...results)
+								let queryInfo = await buildFallbackSearchQueriesWithAi(e, { allowAi: true })
+								logSearchQueryContext(e, { phase: 'serpapi_search', queryInfo, provider: externalSearch.provider })
+								if (queryInfo?.error) {
+									let scope = queryInfo?.provider === 'xai' ? 'xai' : 'openai'
+									let info = describeError(queryInfo.error, { scope })
+									let actionNote = info.action ? ` action=${info.action}` : ''
+									let message = `#${e.id} serpapi ai query failed ${info.summary || 'unknown'}${actionNote}`
+									runLogger.logLine(message, message)
+									logEvent(e, {
+										phase: 'serpapi_query_ai',
+										status: 'fail',
+										reason: info.summary || '',
+										action: info.action || '',
+										provider: queryInfo?.provider || '',
+										model: queryInfo?.model || '',
+									}, message, 'warn')
+								}
+								let queries = Array.isArray(queryInfo?.queries) ? queryInfo.queries : []
+								if (!queries.length) {
+									let skipReason = queryInfo?.reason || 'no_queries'
+									logEvent(e, {
+										phase: 'serpapi_search',
+										status: 'skipped',
+										reason: skipReason,
+										provider: externalSearch.provider,
+									}, `#${e.id} serpapi search skipped (${skipReason})`, 'warn')
+								} else {
+									for (let query of queries) {
+										logSearchQuery(e, { phase: 'serpapi_search', provider: externalSearch.provider, query, reason: queryInfo?.reason || getSearchQuerySource(e) })
+										let results = await searchExternal(query)
+										logSearchResults(e, { phase: 'serpapi_search', provider: externalSearch.provider, query, results })
+										if (results.length) externalResults.push(...results)
+									}
+								}
+							}
+							if (externalResults.length && !fetched) {
+								let externalClassified = classifyAlternativeCandidates(e, externalResults)
+								let externalAlternatives = externalClassified.accepted
+								for (let alt of externalClassified.accepted) {
+									logCandidateDecision(e, alt, 'accepted', e._fallbackReason || '', { phase: 'serpapi_candidate', provider: externalSearch?.provider || '' })
+								}
+								for (let alt of externalClassified.rejected) {
+									logCandidateDecision(e, alt, 'rejected', alt.reason || 'filtered', { phase: 'serpapi_candidate', provider: externalSearch?.provider || '' })
+								}
+								if (externalAlternatives.length) {
+									let deferredExternal = null
+									for (let alt of externalAlternatives) {
+										let res = await tryAlternative(alt, { allowWait: false })
+										if (res?.deferred) {
+											deferredExternal = alt
+											break
+										}
+										if (res?.fetched) {
+											fetched = true
+											break
+										}
+									}
+									if (!fetched && deferredExternal) {
+										let res = await tryAlternative(deferredExternal, { allowWait: true })
+										if (res?.fetched) fetched = true
+									}
 								}
 							}
 						}
-						if (externalResults.length && !fetched) {
-							let externalClassified = classifyAlternativeCandidates(e, externalResults)
-							let externalAlternatives = externalClassified.accepted
-							for (let alt of externalClassified.accepted) {
-								logCandidateDecision(e, alt, 'accepted', '', { phase: 'external_candidate', provider: externalSearch?.provider || '' })
-							}
-							for (let alt of externalClassified.rejected) {
-								logCandidateDecision(e, alt, 'rejected', alt.reason || 'filtered', { phase: 'external_candidate', provider: externalSearch?.provider || '' })
-							}
-							if (externalAlternatives.length) {
-								let deferredExternal = null
-								for (let alt of externalAlternatives) {
-									let res = await tryAlternative(alt, { allowWait: false })
-									if (res?.deferred) {
-										deferredExternal = alt
-										break
-									}
-									if (res?.fetched) {
-										fetched = true
-										break
-									}
-								}
-								if (!fetched && deferredExternal) {
-									let res = await tryAlternative(deferredExternal, { allowWait: true })
-									if (res?.fetched) fetched = true
-								}
-							}
+						if (!fetched) {
+							logEvent(e, {
+								phase: 'fallback_failed',
+								status: 'fail',
+							}, `#${e.id} fallback exhausted`, 'warn')
 						}
-					}
-					if (!fetched) {
-						logEvent(e, {
-							phase: 'fallback_failed',
-							status: 'fail',
-						}, `#${e.id} fallback exhausted`, 'warn')
 					}
 				}
 			}
@@ -2112,7 +1708,6 @@ export async function summarize() {
 			let missing = missingFields(e)
 			let complete = missing.length === 0
 			let verifiedOk = e._verifyStatus === 'ok' || e._verifyStatus === 'skipped'
-			e[verifyStatusColumn] = complete && verifiedOk ? 'ok' : ''
 			if (!complete || !verifiedOk) {
 				failures.push({
 					id: e.id,
@@ -2144,21 +1739,18 @@ export async function summarize() {
 
 		if (failures.length) {
 			let limit = summarizeConfig.failSummaryLimit || 0
-			log('\nFailed rows:', failures.length)
+			runLogger.logLine(`Failed rows: ${failures.length}`, `Failed rows: ${failures.length}`)
 			let items = limit > 0 ? failures.slice(0, limit) : failures
 			for (let item of items) {
 				let meta = [item.phase, item.status, item.method].filter(Boolean).join('/')
 				let parts = [item.title, item.source, meta].filter(Boolean)
 				if (item.reason) parts.push(item.reason)
-				log(`[fail] #${item.id}`, parts.join(' | '))
+				runLogger.logLine(`[fail] #${item.id} ${parts.join(' | ')}`, `[fail] #${item.id} ${parts.join(' | ')}`)
 			}
 			if (limit > 0 && failures.length > limit) {
-				log(`... ${failures.length - limit} more`)
+				runLogger.logLine(`... ${failures.length - limit} more`, `... ${failures.length - limit} more`)
 			}
 		}
-		if (backfilled) log('backfilled metadata for', backfilled, 'rows')
-		if (backfilledGn) log('backfilled google news links for', backfilledGn, 'rows')
-
 		finalyze()
 		let copyStatusLine = ''
 		if (isSummarizeCli) {
@@ -2166,19 +1758,28 @@ export async function summarize() {
 				copyStatusLine = 'copy spreadsheet: skipped (coffeeTodayFolderId not set)'
 			} else {
 				try {
+					let { copyFile } = await import('./google-drive.js')
 					await copyFile(spreadsheetId, coffeeTodayFolderId, 'news-today')
 					copyStatusLine = `copy spreadsheet: ${spreadsheetId} -> ${coffeeTodayFolderId} (ok)`
 				} catch (e) {
 					let status = e?.status || e?.code
 					let reason = e?.errors?.[0]?.reason
 					let message = e?.errors?.[0]?.message || e?.message || ''
+					let guidance = describeError(e, {
+						scope: 'drive',
+						resource: 'folder',
+						id: coffeeTodayFolderId,
+						email: process.env.SERVICE_ACCOUNT_EMAIL,
+					})
+					let action = guidance.action ? ` action=${guidance.action}` : ''
 					if (status === 404 || reason === 'notFound') {
-						copyStatusLine = 'copy spreadsheet: skipped (folder not found or no access)'
+						copyStatusLine = `copy spreadsheet: skipped (folder not found or no access${action ? `;${action}` : ''})`
 					} else {
 						let suffix = [
 							status ? `status=${status}` : '',
 							reason ? `reason=${reason}` : '',
 							message ? `msg=${message}` : '',
+							guidance.action ? `action=${guidance.action}` : '',
 						].filter(Boolean).join(' ')
 						copyStatusLine = `copy spreadsheet: failed${suffix ? ` (${suffix})` : ''}`
 					}
@@ -2190,15 +1791,42 @@ export async function summarize() {
 			`sheet read/write: ${spreadsheetId} (sheet=${newsSheet}, mode=${spreadsheetMode})`,
 			logging.fetchLogFile ? `fetch log: ${logging.fetchLogFile}` : '',
 			`run time: ${formatDuration(runMs) || `${Math.round(runMs)}ms`}`,
+			`rows: ${stats.ok}/${stats.ok + stats.fail} ok`,
 			copyStatusLine,
 		]
-		progressTracker?.setFooter?.(footer)
-		progressTracker?.done?.()
-		log('\n', stats)
+		for (let line of footer.filter(Boolean)) {
+			runLogger.logLine(line, line)
+		}
+		runLogger.logLine(`stats: ok=${stats.ok} fail=${stats.fail}`, `stats: ok=${stats.ok} fail=${stats.fail}`)
 		return stats
 	} catch (error) {
-		if (error?.code === 'BROWSER_CLOSED') {
-			log('[fatal] browser window closed; stopping summarize')
+		if (error?.code === 'VERIFY_FATAL') {
+			let modelNote = error?.model ? ` model=${error.model}` : ''
+			let actionNote = error?.action ? ` action=${error.action}` : ''
+			let message = error?.message || 'verify unavailable'
+			runLogger.logLine(`[fatal] ${message}${modelNote}${actionNote}`, `[fatal] ${message}${modelNote}${actionNote}`)
+			try {
+				await finalyze()
+			} catch {}
+			if (isSummarizeCli) process.exitCode = 1
+			return stats
+		} else if (error?.code === 'SEARCH_QUERY_FATAL') {
+			let provider = error?.provider || ''
+			let model = error?.model || ''
+			let scope = provider === 'xai' ? 'xai' : 'openai'
+			let guidance = describeError(error?.cause || error, { scope })
+			let actionNote = guidance?.action ? ` action=${guidance.action}` : ''
+			let message = error?.message || 'search query unavailable'
+			let modelNote = model ? ` model=${model}` : ''
+			let providerNote = provider ? ` provider=${provider}` : ''
+			runLogger.logLine(`[fatal] ${message}${providerNote}${modelNote}${actionNote}`, `[fatal] ${message}${providerNote}${modelNote}${actionNote}`)
+			try {
+				await finalyze()
+			} catch {}
+			if (isSummarizeCli) process.exitCode = 1
+			return stats
+		} else if (error?.code === 'BROWSER_CLOSED') {
+			runLogger.logLine('[fatal] browser window closed; stopping summarize', '[fatal] browser window closed; stopping summarize')
 		}
 		throw error
 	} finally {

@@ -12,6 +12,8 @@ import {
 	normalizeTitleForSearch,
 	normalizeTitleKey,
 } from './utils.js'
+import { buildSearchQueryContext, generateSearchQueries } from './search-query.js'
+import { searchQueryConfig } from '../../config/search-query.js'
 
 const googleNewsDefaults = 'hl=en-US&gl=US&ceid=US:en'
 const gnSearchCache = new Map()
@@ -60,11 +62,12 @@ function buildRequiredQuery(text) {
 }
 
 function buildSerpapiQuery(event, fallbackQuery) {
+	if (fallbackQuery) return fallbackQuery
 	if (!event) return fallbackQuery || ''
 	let title = normalizeTitleForSearch(event._originalTitleEn || event._originalTitleRu || event.titleEn || event.titleRu)
-	if (title) return buildRequiredQuery(title)
+	if (title) return `"${title}"`
 	let terms = extractSearchTermsFromUrl(event.url || event.gnUrl || '')
-	if (terms) return buildRequiredQuery(terms)
+	if (terms) return `"${terms}"`
 	return fallbackQuery || ''
 }
 
@@ -204,7 +207,7 @@ export function parseGoogleNewsXml(xml) {
 	}
 }
 
-export function buildSearchQuery(event) {
+export function buildSearchQuery(event, { allowSite = true } = {}) {
 	let title = normalizeTitleForSearch(event._originalTitleEn || event._originalTitleRu || event.titleEn || event.titleRu)
 	if (!isBlank(title)) return `"${title}"`
 	if (!isBlank(event.url)) {
@@ -213,12 +216,33 @@ export function buildSearchQuery(event) {
 			let slug = parsed.pathname.split('/').filter(Boolean).pop() || ''
 			let terms = slug.replace(/[-_]/g, ' ').trim()
 			let host = parsed.hostname.replace(/^www\./, '')
+			if (!allowSite) {
+				if (terms) return terms
+				return host || event.url
+			}
 			return terms ? `site:${host} ${terms}` : `site:${host}`
 		} catch {
 			return event.url
 		}
 	}
 	return ''
+}
+
+export function shouldDropSiteForFallback(event) {
+	let reason = String(event?._fallbackReason || '').toLowerCase()
+	if (!reason) return false
+	let matches = [
+		'blocked',
+		'captcha',
+		'cooldown',
+		'forbidden',
+		'rate_limit',
+		'429',
+		'403',
+		'401',
+		'timeout',
+	]
+	return matches.some(match => reason.includes(match))
 }
 
 export function buildFallbackSearchQueries(event) {
@@ -234,15 +258,13 @@ export function buildFallbackSearchQueries(event) {
 		return ''
 	}
 	if (title) {
-		let q = buildRequiredQuery(title)
-		if (q) queries.push(q)
+		queries.push(`"${title}"`)
 	}
 	if (!queries.length) {
 		let url = event._originalUrl || event.url || event.alternativeUrl || event.gnUrl || ''
 		let terms = extractTerms(url)
 		if (terms) {
-			let q = buildRequiredQuery(terms)
-			if (q) queries.push(q)
+			queries.push(`"${terms}"`)
 		}
 	}
 	let seen = new Set()
@@ -255,6 +277,87 @@ export function buildFallbackSearchQueries(event) {
 		unique.push(q)
 	}
 	return unique.slice(0, 3)
+}
+
+function buildTitleDescriptionQueryFromContext(context = {}) {
+	let title = normalizeTitleForSearch(context.title || '')
+	let description = normalizeTitleForSearch(context.description || '')
+	if (title && description) return `"${title}" ${description}`
+	if (title) return `"${title}"`
+	if (description) return `"${description}"`
+	return ''
+}
+
+export async function buildFallbackSearchQueriesWithAi(event, { allowAi = true, aiOptions = {}, generate = generateSearchQueries } = {}) {
+	let contextInfo = buildSearchQueryContext(event)
+	let logContext = contextInfo?.logContext || contextInfo?.context
+	let queryFromTitle = buildTitleDescriptionQueryFromContext(logContext)
+	let shouldUseAi = Boolean(contextInfo?.meta?.usedUrl)
+	if (!shouldUseAi) {
+		let queries = queryFromTitle ? [queryFromTitle] : []
+		return {
+			queries,
+			reason: queryFromTitle ? 'title_desc' : 'title_desc_empty',
+			aiUsed: false,
+			context: contextInfo?.context,
+			logContext,
+			contextMeta: contextInfo?.meta,
+		}
+	}
+	if (!allowAi || !searchQueryConfig.enabled) {
+		let fatal = new Error('search query unavailable: AI disabled')
+		fatal.code = 'SEARCH_QUERY_FATAL'
+		fatal.provider = aiOptions?.provider || searchQueryConfig.provider || ''
+		fatal.model = aiOptions?.model || searchQueryConfig.model || ''
+		throw fatal
+	}
+	try {
+		let result = await generate(event, aiOptions)
+		let aiQueries = Array.isArray(result?.queries) ? result.queries : []
+		if (aiQueries.length) {
+			let contextMeta = result?.contextMeta || contextInfo?.meta || {}
+			return {
+				queries: aiQueries,
+				reason: contextMeta?.mode === 'url' ? 'ai_url' : 'ai_title_desc',
+				provider: result?.provider || '',
+				model: result?.model || '',
+				aiUsed: true,
+				context: result?.context || contextInfo?.context,
+				logContext,
+				contextMeta,
+				aiResponse: result?.raw || '',
+			}
+		}
+		let emptyMeta = result?.contextMeta || contextInfo?.meta || {}
+		return {
+			queries: [],
+			reason: 'ai_empty',
+			provider: result?.provider || '',
+			model: result?.model || '',
+			aiUsed: true,
+			context: result?.context || contextInfo?.context,
+			logContext,
+			contextMeta: emptyMeta,
+			aiResponse: result?.raw || '',
+		}
+	} catch (error) {
+		let provider = aiOptions?.provider || searchQueryConfig.provider || ''
+		let model = aiOptions?.model || searchQueryConfig.model || ''
+		let fatal = new Error(error?.message || 'search query unavailable')
+		fatal.code = 'SEARCH_QUERY_FATAL'
+		fatal.cause = error
+		fatal.provider = provider
+		fatal.model = model
+		throw fatal
+	}
+}
+
+export function getSearchQuerySource(event) {
+	let title = normalizeTitleForSearch(event._originalTitleEn || event._originalTitleRu || event.titleEn || event.titleRu || event.title || '')
+	if (title) return 'title'
+	let url = event._originalUrl || event.url || event.alternativeUrl || event.gnUrl || ''
+	if (url) return 'url_terms'
+	return 'unknown'
 }
 
 export function scoreGnCandidate(event, candidate) {

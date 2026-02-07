@@ -1,4 +1,5 @@
 import { minAgencyLevel, alternativeDateWindowDays } from '../../config/verification.js'
+import { isDomainInCooldown } from '../domain-cooldown.js'
 import { extractSearchTermsFromUrl, getAgencyLevel, getArticleLink, normalizeSource, normalizeTitleKey } from './utils.js'
 
 const runtimeArticlesKey = `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -148,6 +149,7 @@ function buildAlternativeArticles(event, candidates) {
 		})
 	for (let article of sorted) {
 		if (!article.normalizedSource) continue
+		if (article.url && isDomainInCooldown(article.url)) continue
 		if (seen.has(article.normalizedSource)) continue
 		if (article.domain && seenDomains.has(article.domain)) continue
 		let titleKey = article.normalizedTitle
@@ -193,10 +195,14 @@ export function classifyAlternativeCandidates(event, candidates) {
 			reason = 'missing_link_or_source'
 		} else if (article.origin === 'sheet') {
 			reason = 'sheet_origin'
+		} else if (article.url && isDomainInCooldown(article.url)) {
+			reason = 'domain_cooldown'
 		} else if (!isWithinDateWindow(targetDate, candidateDate)) {
 			reason = 'date_out_of_range'
 		} else if (sourceKey && sourceKey === currentSource && link === currentLink) {
 			reason = 'same_source_same_link'
+		} else if (sourceKey && sourceKey === currentSource) {
+			reason = 'same_source'
 		} else if (currentDomain && domain && domain === currentDomain) {
 			reason = 'same_domain_current'
 		} else if (acceptedDomains.has(domain)) {
@@ -266,6 +272,7 @@ export function buildExternalAlternatives(event, results) {
 		})
 	for (let item of sorted) {
 		if (!item.normalizedSource) continue
+		if (item.url && isDomainInCooldown(item.url)) continue
 		if (seen.has(item.normalizedSource)) continue
 		if (item.domain && seenDomains.has(item.domain)) continue
 		let titleKey = item.normalizedTitle
