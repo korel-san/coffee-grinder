@@ -7,14 +7,14 @@ import { log } from './log.js'
 
 export async function cleanup() {
 	let name = new Date(Date.now() - 24*60*60e3).toISOString().split('T')[0]
-	if (news.length) {
-		log('Archiving spreadsheet...')
-		await copyFile(spreadsheetId, archiveFolderId, name)
-		news.forEach((e, i) => news[i] = {})
-		await sleep(1)
-		news.length = 0
-	}
-	archivePresentation(name)
+	//if (news.length) {
+	//	log('Archiving spreadsheet...')
+	//	await copyFile(spreadsheetId, archiveFolderId, name)
+	//	news.forEach((e, i) => news[i] = {})
+	//	await sleep(1)
+	//	news.length = 0
+	//}
+	await archivePresentation(name)
 	let audio = await getFile(rootFolderId, audioFolderName)
 	if (audio) {
 		log('Archiving audio...')

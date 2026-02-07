@@ -1,8 +1,8 @@
 @echo off
-git pull
+::git pull
 
 cd grinder
-fnm use 2>nul
+fnm use 24 2>nul
 call npm i --loglevel=error
 call npm run cleanup > logs/cleanup.log
 

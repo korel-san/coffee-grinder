@@ -9,6 +9,8 @@
     "load": "node -r dotenv/config --no-warnings --experimental-fetch src/1.load",
     "summarize": "node -r dotenv/config --no-warnings --experimental-fetch src/2.summarize",
     "slides": "node -r dotenv/config --no-warnings --experimental-fetch src/3.slides",
+    "screenshots": "node -r dotenv/config --no-warnings --experimental-fetch src/screenshots",
+    "upload-img": "node -r dotenv/config --no-warnings --experimental-fetch src/upload-img",
     "audio": "node -r dotenv/config --no-warnings --experimental-fetch src/4.audio"
   },
   "keywords": [],

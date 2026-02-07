@@ -1,6 +1,8 @@
 import { log } from './log.js'
 import { news } from './store.js'
 import { speak } from './eleven.js'
+import { uploadFolder } from './google-drive.js'
+import { autoArchiveFolderId, audioFolderName } from '../config/google-drive.js'
 
 export async function audio() {
 	let list = news.filter(e => e.sqk && e.summary)
@@ -13,6 +15,10 @@ export async function audio() {
 			await speak(event.sqk, event.summary)
 		}
 	}
+
+	log('\nUploading audio to Drive...')
+	await uploadFolder('../audio', autoArchiveFolderId, audioFolderName, ['.mp3'])
+	log('Audio uploaded.')
 }
 
 if (process.argv[1].endsWith('audio')) audio()

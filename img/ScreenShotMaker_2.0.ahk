@@ -95,7 +95,14 @@ operateLink(Index)
     Send, {Esc}
     Sleep, 250
     PrintScreen(Index)
-    Send, ^{w}
+    Sleep, 500
+    IfWinExist, ahk_exe opera.exe
+    {
+        WinActivate
+        Sleep, 300
+        Send, ^{F4}
+        Sleep, 500
+    }
 
     return
 }

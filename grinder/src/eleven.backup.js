@@ -9,12 +9,11 @@ const client = new ElevenLabsClient()
 export async function speak(id, text) {
 	return new Promise(async resolve => {
 		let error = e => {
-   log('ElevenLabs error:', e?.message || e)
-   log('Error details:', JSON.stringify(e, null, 2))
-   resolve()
-  }
+			log(e)
+			resolve()
+		}
 		try {
-			let audio = await client.textToSpeech.convert('caCdUepOP0tqRkMSyQWB', {
+			let audio = await client.textToSpeech.convert('m86umBOshUanEAvY8HCs', {
 				text,
 				model_id: "eleven_multilingual_v2",
 			})

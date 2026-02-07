@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 async function initialize() {
-	const chromeProfilePath = `${os.homedir()}/AppData/Local/Google/Chrome/User Data`
+	const chromeProfilePath = `${os.homedir()}/AppData/Local/Google/Chrome/Playwright Profile`
 	// log(`Chrome profile path: ${chromeProfilePath}`)
 	let extension = `${__dirname}/../extensions/captcha-solver/0.2.1_0`
 	let context = await chromium.launchPersistentContext(chromeProfilePath, {

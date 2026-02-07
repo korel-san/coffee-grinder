@@ -7,3 +7,8 @@ audio/*.mp3
 node_modules/
 .npm
 .env
+.claude/
+CLAUDE.md
+.mcp.json
+**/*.jpg
+nul
