@@ -21,7 +21,7 @@
     "@googleapis/sheets": "^9.3.1",
     "@googleapis/slides": "^1.2.0",
     "@types/node": "^22.13.0",
-    "axios": "^1.7.9",
+    "axios": "^1.13.5",
     "dotenv": "^16.4.7",
     "elevenlabs": "^1.50.4",
     "google-auth-library": "^9.15.1",
