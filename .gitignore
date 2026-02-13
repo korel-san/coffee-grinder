@@ -2,6 +2,8 @@ service-account.json
 screenshots.txt
 grinder/articles/*.html
 grinder/articles/*.txt
+grinder/tests/fixtures/summarize/news.saved.json
+grinder/tests/fixtures/summarize/articles-out/
 audio/*.mp3
 **/*.log
 node_modules/

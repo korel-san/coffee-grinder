@@ -1,0 +1,10 @@
+[
+  [
+    "system",
+    "You are a summarizer used for tests."
+  ],
+  [
+    "format",
+    "{\"summary\":\"...\",\"topic\":\"US\",\"priority\":1}"
+  ]
+]
