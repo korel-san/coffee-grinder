@@ -1,26 +1,8 @@
-import fs from 'fs'
-import path from 'path'
 import { JSDOM } from 'jsdom'
 
 import { log } from './log.js'
 
-const isMock = process.env.MOCK_GOOGLE_NEWS === '1'
-const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'tests', 'fixtures', 'summarize')
-const mockPath = process.env.MOCK_GOOGLE_NEWS_PATH ?? path.join(mockDir, 'google-news.json')
-let mockMap
-function loadMockMap() {
-	if (!mockMap) {
-		if (!fs.existsSync(mockPath)) throw new Error(`Mock Google News map not found: ${mockPath}`)
-		mockMap = JSON.parse(fs.readFileSync(mockPath, 'utf8'))
-	}
-	return mockMap
-}
-
 export async function decodeGoogleNewsUrl(url) {
-	if (isMock) {
-		const map = loadMockMap()
-		return map[url]
-	}
 	for (let i = 0; i < 5; i++) {
 		try {
 			let parsedUrl = new URL(url)
