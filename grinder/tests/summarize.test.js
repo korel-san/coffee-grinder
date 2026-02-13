@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const rootDir = path.resolve(__dirname, '..')
-const fixturesDir = path.join(rootDir, 'fixtures', 'summarize')
+const fixturesDir = path.join(rootDir, 'tests', 'fixtures', 'summarize')
 const outputPath = process.env.MOCK_SHEETS_SAVE_PATH ?? path.join(fixturesDir, 'news.saved.json')
 const articlesDir = path.join(fixturesDir, 'articles-out')
 

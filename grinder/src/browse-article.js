@@ -9,7 +9,7 @@ import { log } from './log.js'
 import { sleep } from './sleep.js'
 
 const isMock = process.env.MOCK_BROWSE === '1'
-const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'fixtures', 'summarize')
+const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'tests', 'fixtures', 'summarize')
 const mockPath = process.env.MOCK_BROWSE_PATH ?? path.join(mockDir, 'fetch.json')
 let mockMap
 function loadMockMap() {

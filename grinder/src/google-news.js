@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom'
 import { log } from './log.js'
 
 const isMock = process.env.MOCK_GOOGLE_NEWS === '1'
-const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'fixtures', 'summarize')
+const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'tests', 'fixtures', 'summarize')
 const mockPath = process.env.MOCK_GOOGLE_NEWS_PATH ?? path.join(mockDir, 'google-news.json')
 let mockMap
 function loadMockMap() {

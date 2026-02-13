@@ -9,7 +9,7 @@ import { load } from './google-sheets.js'
 import { aiSheet } from '../config/google-drive.js'
 
 const isMock = process.env.MOCK_AI === '1'
-const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'fixtures', 'summarize')
+const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'tests', 'fixtures', 'summarize')
 const mockPath = process.env.MOCK_AI_PATH ?? path.join(mockDir, 'ai.json')
 let mockMap
 function loadMockMap() {

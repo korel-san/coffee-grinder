@@ -5,7 +5,7 @@ import Sheets from '@googleapis/sheets'
 import { auth } from './google-auth.js'
 
 const isMock = process.env.MOCK_SHEETS === '1'
-const mockDir = process.env.MOCK_SHEETS_DIR ?? path.resolve(process.cwd(), 'fixtures', 'summarize')
+const mockDir = process.env.MOCK_SHEETS_DIR ?? path.resolve(process.cwd(), 'tests', 'fixtures', 'summarize')
 const mockNewsPath = process.env.MOCK_SHEETS_NEWS_PATH ?? path.join(mockDir, 'news.json')
 const mockAiPath = process.env.MOCK_SHEETS_AI_PATH ?? path.join(mockDir, 'ai-instructions.json')
 const mockSavePath = process.env.MOCK_SHEETS_SAVE_PATH ?? path.join(mockDir, 'news.saved.json')
