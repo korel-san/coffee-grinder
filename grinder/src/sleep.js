@@ -1,6 +1,7 @@
 import { log } from './log.js'
 
 export function sleep(ms) {
+	if (process.env.MOCK_SLEEP === '1') return
 	if (ms <= 0) return
 	if (ms >= 1e3) {
 		log('resting', (ms/1e3).toFixed() + 's...')

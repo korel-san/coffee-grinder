@@ -1,4 +1,5 @@
 import fs from 'fs'
+import path from 'path'
 
 import { log } from './log.js'
 import { sleep } from './sleep.js'
@@ -13,6 +14,8 @@ import { browseArticle, finalyze } from './browse-article.js'
 
 export async function summarize() {
 	news.forEach((e, i) => e.id ||= i + 1)
+	const articlesDir = process.env.ARTICLES_DIR ?? 'articles'
+	fs.mkdirSync(articlesDir, { recursive: true })
 
 	let list = news.filter(e => !e.summary && e.topic !== 'other')
 
@@ -44,9 +47,9 @@ export async function summarize() {
 			let html = await fetchArticle(e.url) || await browseArticle(e.url)
 			if (html) {
 				log('got', html.length, 'chars')
-				fs.writeFileSync(`articles/${e.id}.html`, `<!--\n${e.url}\n-->\n${html}`)
+				fs.writeFileSync(path.join(articlesDir, `${e.id}.html`), `<!--\n${e.url}\n-->\n${html}`)
 				e.text = htmlToText(html)
-				fs.writeFileSync(`articles/${e.id}.txt`, `${e.titleEn || e.titleRu || ''}\n\n${e.text}`)
+				fs.writeFileSync(path.join(articlesDir, `${e.id}.txt`), `${e.titleEn || e.titleRu || ''}\n\n${e.text}`)
 				// let skip = text.indexOf((e.titleEn ?? '').split(' ')[0])
 				// if (skip > 0 && text.length - skip > 1000) {
 				// 	text = text.slice(skip)

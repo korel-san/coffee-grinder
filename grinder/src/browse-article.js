@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import { chromium } from 'playwright'
 import os from 'os'
 import { dirname } from 'path'
@@ -5,6 +7,18 @@ import { fileURLToPath } from 'url'
 
 import { log } from './log.js'
 import { sleep } from './sleep.js'
+
+const isMock = process.env.MOCK_BROWSE === '1'
+const mockDir = process.env.MOCK_DATA_DIR ?? path.resolve(process.cwd(), 'fixtures', 'summarize')
+const mockPath = process.env.MOCK_BROWSE_PATH ?? path.join(mockDir, 'fetch.json')
+let mockMap
+function loadMockMap() {
+	if (!mockMap) {
+		if (!fs.existsSync(mockPath)) throw new Error(`Mock browse map not found: ${mockPath}`)
+		mockMap = JSON.parse(fs.readFileSync(mockPath, 'utf8'))
+	}
+	return mockMap
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -27,14 +41,19 @@ async function initialize() {
 	let page = await context.newPage()
 	return { context, page }
 }
-let init = initialize()
+let init = isMock ? null : initialize()
 
 export async function finalyze() {
+	if (isMock) return
 	let { context } = await init
 	context?.close()
 }
 
 export async function browseArticle(url) {
+	if (isMock) {
+		const map = loadMockMap()
+		return map[url]
+	}
 	let { page } = await init
 	try {
 		log('Browsing archive...')
