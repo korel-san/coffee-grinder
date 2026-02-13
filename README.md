@@ -1,14 +1,14 @@
 # Coffee Grinder
 
 ## Google OAuth setup (Drive, Sheets, Slides)
-1. Go to Google Cloud Console.
+1. Go to Google Cloud Console: `https://console.cloud.google.com/`.
 2. Open `APIs & Services` -> `Credentials`.
 3. Click `Create Credentials` -> `OAuth client ID`.
 4. Choose `Desktop app` (recommended) or `Web application`.
 5. If you choose `Web application`, add this redirect URI:
    `https://developers.google.com/oauthplayground`
 6. Save the Client ID and Client Secret.
-7. Open OAuth 2.0 Playground.
+7. Open OAuth 2.0 Playground: `https://developers.google.com/oauthplayground/`.
 8. In settings, enable `Use your own OAuth credentials` and enter the Client ID and Secret.
 9. Select these scopes:
    `https://www.googleapis.com/auth/drive`
