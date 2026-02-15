@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+remote_name="$1"
+remote_url="$2"
+
+# Hard block any interaction with the legacy upstream repo (if it exists locally as a remote).
+case "$remote_url" in
+	*github.com/lubarsky-coffee/coffee-grinder*|*github.com:lubarsky-coffee/coffee-grinder*)
+		echo "ERROR: Remote '$remote_name' points to legacy repo 'lubarsky-coffee/coffee-grinder'." >&2
+		echo "This repo is NOT a source of truth and must never be used." >&2
+		exit 1
+		;;
+esac
+
+# Block pushes to the protected branch.
+# Git provides lines on stdin: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	if [ "$remote_ref" = "refs/heads/main" ]; then
+		echo "ERROR: Pushing to 'main' is forbidden. Create a feature branch and open a PR." >&2
+		exit 1
+	fi
+done
+
+exit 0
+
