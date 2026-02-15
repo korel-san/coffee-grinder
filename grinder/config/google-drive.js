@@ -1,6 +1,13 @@
-export let rootFolderId = '1nJnHBcY252xqV0JDIidsxxhJkY6-w2WO'
-export let mainSpreadsheetId = '19Bt7Kov-1lUfc3bOJ-dNkBcTkQPhLMV2W135x0nlctA'
-export let autoSpreadsheetId = '1aTs8t6wp3Ag7yryH2wci_ETdtNWmDu0ePyf-jLdY9NQ'
+function env(name) {
+	let v = process.env[name]
+	if (typeof v !== 'string') return
+	v = v.trim()
+	return v ? v : undefined
+}
+
+export let rootFolderId = env('GOOGLE_ROOT_FOLDER_ID') || env('GOOGLE_DRIVE_ROOT_FOLDER_ID') || '1nJnHBcY252xqV0JDIidsxxhJkY6-w2WO'
+export let mainSpreadsheetId = env('GOOGLE_SHEET_ID_MAIN') || '19Bt7Kov-1lUfc3bOJ-dNkBcTkQPhLMV2W135x0nlctA'
+export let autoSpreadsheetId = env('GOOGLE_SHEET_ID_AUTO') || '1aTs8t6wp3Ag7yryH2wci_ETdtNWmDu0ePyf-jLdY9NQ'
 export let newsSheet = 'news'
 export let aiSheet = 'ai-instructions'
 export let promptsSheet = 'prompts'
