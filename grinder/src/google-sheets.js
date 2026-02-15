@@ -24,6 +24,11 @@ export async function save(spreadsheetId, range, data) {
 	})
 }
 
+export async function clear(spreadsheetId, range) {
+	await init
+	return await sheets.values.clear({ spreadsheetId, range })
+}
+
 export async function append(spreadsheetId, range, data) {
 	await init
 	return await sheets.values.append({
