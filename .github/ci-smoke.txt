@@ -1,0 +1,1 @@
+CI smoke check PR: verify GitHub Actions tests pass on pull_request.
