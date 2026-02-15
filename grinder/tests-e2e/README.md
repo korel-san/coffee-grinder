@@ -9,6 +9,16 @@ E2E tests are opt-in and write into a dedicated **test** Google Spreadsheet.
 3. Set `GOOGLE_SHEET_ID_MAIN` in `.env.e2e` to your test spreadsheet id
 4. Rename the spreadsheet title to include `test` or `e2e` (safety check)
 
+## Cases
+
+Provide multiple URLs via one of:
+
+- `E2E_CASES` (recommended): `expect|label|url` separated by `;`
+  - `expect`: `ok` or `fail`
+  - Example: `ok|normal|https://...;fail|missing|https://example.invalid/...`
+- `E2E_ARTICLE_URLS`: comma-separated list of URLs (all treated as `ok`)
+- `E2E_ARTICLE_URL`: single URL (treated as `ok`)
+
 ## Run
 
 ```sh
