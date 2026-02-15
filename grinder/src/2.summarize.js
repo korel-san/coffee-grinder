@@ -8,9 +8,17 @@ import { topics, topicsMap } from '../config/topics.js'
 import { decodeGoogleNewsUrl } from './google-news.js'
 import { extractArticleInfo, findAlternativeArticles } from './newsapi.js'
 import { ai } from './ai.js'
+import { collectFacts, collectVideos } from './enrich.js'
 
 const MIN_TEXT_LENGTH = 400
 const MAX_TEXT_LENGTH = 30000
+
+function ensureColumns(table, cols) {
+	table.headers ||= []
+	for (let c of cols) {
+		if (!table.headers.includes(c)) table.headers.push(c)
+	}
+}
 
 function normalizeText(text) {
 	return String(text ?? '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim()
@@ -78,6 +86,8 @@ async function tryOtherAgencies(e) {
 }
 
 export async function summarize() {
+	ensureColumns(news, ['url', 'factsRu', 'videoUrls'])
+
 	news.forEach((e, i) => e.id ||= i + 1)
 
 	let list = news.filter(e => !e.summary && e.topic !== 'other')
@@ -86,6 +96,8 @@ export async function summarize() {
 	let last = {
 		urlDecode: { time: 0, delay: 30e3, increment: 1000 },
 		ai: { time: 0, delay: 0 },
+		facts: { time: 0, delay: 0 },
+		videos: { time: 0, delay: 0 },
 	}
 	for (let i = 0; i < list.length; i++) {
 		let e = list[i]
@@ -129,6 +141,21 @@ export async function summarize() {
 				e.summary = res.summary
 				e.aiTopic = topicsMap[res.topic]
 				e.aiPriority = res.priority
+			}
+		}
+
+		if (e.summary && e.text?.length > MIN_TEXT_LENGTH) {
+			if (!e.factsRu) {
+				await sleep(last.facts.time + last.facts.delay - Date.now())
+				last.facts.time = Date.now()
+				log('Collecting facts...')
+				e.factsRu = await collectFacts(e)
+			}
+			if (!e.videoUrls) {
+				await sleep(last.videos.time + last.videos.delay - Date.now())
+				last.videos.time = Date.now()
+				log('Collecting videos...')
+				e.videoUrls = await collectVideos(e)
 			}
 		}
 

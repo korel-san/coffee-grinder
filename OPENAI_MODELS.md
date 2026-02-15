@@ -1,6 +1,7 @@
 # OpenAI Models For `grinder` Summarization
 
 `grinder/src/ai.js` uses the OpenAI **Assistants API** for article summarization.
+`grinder/src/enrich.js` uses **Chat Completions + Web Search** for facts/videos enrichment.
 
 ## Selecting A Model
 
@@ -27,6 +28,24 @@ cd grinder
 OPENAI_SUMMARIZE_MODEL=gpt-5-mini-2025-08-07 npm run summarize
 ```
 
+## Web Search (Facts, Videos)
+
+Facts and video links are generated via `grinder/src/enrich.js` using Chat Completions with `web_search_options`.
+
+Env vars:
+
+- `OPENAI_FACTS_MODEL` (default: `gpt-4o-mini-search-preview`)
+- `OPENAI_VIDEOS_MODEL` (default: `gpt-4o-mini-search-preview`)
+- `OPENAI_WEBSEARCH_MODEL` (optional shared default for both)
+- `OPENAI_WEBSEARCH_CONTEXT_SIZE` (optional)
+- `OPENAI_WEBSEARCH_COUNTRY` / `OPENAI_WEBSEARCH_CITY` / `OPENAI_WEBSEARCH_REGION` / `OPENAI_WEBSEARCH_TIMEZONE` (optional)
+
+Search-capable model IDs (per OpenAI docs):
+
+- `gpt-5-search-api`
+- `gpt-4o-search-preview`
+- `gpt-4o-mini-search-preview`
+
 ## GPT Model Options (IDs + Snapshots)
 
 These are official GPT model IDs from OpenAI docs (some accounts may not have access to all of them):
@@ -46,4 +65,3 @@ Source of truth:
 
 - Models index: https://developers.openai.com/api/docs/models
 - Each model page includes snapshots and endpoint support (verify Assistants support there).
-

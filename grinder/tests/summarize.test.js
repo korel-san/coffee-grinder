@@ -111,6 +111,13 @@ mock.module(mod('sleep.js'), {
 	}
 })
 
+mock.module(mod('enrich.js'), {
+	namedExports: {
+		collectFacts: async ({ url }) => `- Факт для ${url}\n- Еще один факт`,
+		collectVideos: async ({ url }) => `- https://youtube.com/watch?v=mock-${encodeURIComponent(url)}`,
+	}
+})
+
 mock.module(mod('log.js'), {
 	namedExports: {
 		log: () => {},
@@ -137,6 +144,8 @@ test('summarize pipeline (mocked)', async () => {
 		assert.ok(updated, `Missing updated row for id=${row.id}`)
 		assert.ok(updated.summary && String(updated.summary).length > 10, `Missing summary for id=${row.id}`)
 		assert.ok(updated.text && String(updated.text).length > 200, `Missing text for id=${row.id}`)
+		assert.ok(updated.factsRu && String(updated.factsRu).length > 10, `Missing factsRu for id=${row.id}`)
+		assert.ok(updated.videoUrls && String(updated.videoUrls).length > 10, `Missing videoUrls for id=${row.id}`)
 		assert.ok(updated.aiTopic, `Missing aiTopic for id=${row.id}`)
 		assert.ok(updated.aiPriority, `Missing aiPriority for id=${row.id}`)
 		if (row.gnUrl) {

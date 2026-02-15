@@ -3,8 +3,7 @@ import OpenAI from 'openai'
 import { spreadsheetId } from './store.js'
 import { log } from './log.js'
 import { sleep } from './sleep.js'
-import { load } from './google-sheets.js'
-import { aiSheet } from '../config/google-drive.js'
+import { getPrompt } from './prompts.js'
 
 const DEFAULT_OPENAI_MODEL = 'gpt-5-mini'
 const FALLBACK_OPENAI_MODEL = 'gpt-4o-mini'
@@ -24,7 +23,7 @@ async function createAssistant({ instructions, model }) {
 }
 
 async function initialize() {
-	let instructions = (await load(spreadsheetId, aiSheet)).map(x => x.join('\t')).join('\n')
+	let instructions = await getPrompt(spreadsheetId, 'summarize:summary')
 	try {
 		assistant = await createAssistant({ instructions, model: openAiModel })
 		log('AI model:', openAiModel)
