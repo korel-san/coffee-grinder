@@ -19,6 +19,7 @@ const modelSource = process.env.OPENAI_SUMMARIZE_MODEL
 		: 'default'
 
 let model = explicitModel || DEFAULT_OPENAI_MODEL
+let summaryTemperature = temperatureForModel(model)
 
 const RESPONSE_FORMAT = {
 	type: 'json_schema',
@@ -39,9 +40,15 @@ const RESPONSE_FORMAT = {
 	},
 }
 
-function describeSummarizeSettings(model) {
+function temperatureForModel(nextModel) {
+	if ((nextModel || '').toLowerCase().startsWith('gpt-5')) return undefined
+	return SUMMARIZE_TEMPERATURE
+}
+
+function describeSummarizeSettings(currentModel) {
 	let src = modelSource ? ` (${modelSource})` : ''
-	return `api=chat.completions model=${model}${src} temperature=${SUMMARIZE_TEMPERATURE} response_format=json_schema reasoning=unset`
+	let tempLabel = summaryTemperature === undefined ? 'unset' : String(summaryTemperature)
+	return `api=chat.completions model=${currentModel}${src} temperature=${tempLabel} response_format=json_schema reasoning=unset`
 }
 
 function isUnsupportedModel(e) {
@@ -52,6 +59,13 @@ function isModelNotFound(e) {
 	return e?.code === 'model_not_found' || e?.status === 404
 }
 
+function isTemperatureUnsupported(e) {
+	const code = e?.code
+	const nested = e?.error?.code
+	const message = `${e?.message || ''} ${e?.error?.message || ''}`.toLowerCase()
+	return code === 'unsupported_value' || nested === 'unsupported_value' || message.includes('temperature')
+}
+
 let instructions = ''
 let init = (async () => {
 	instructions = await getPrompt(spreadsheetId, 'summarize:summary')
@@ -60,15 +74,17 @@ let init = (async () => {
 
 async function chatSummarize({ url, text }) {
 	let content = `URL: ${url}\nText:\n${text}`
-	let res = await openai.chat.completions.create({
+	const request = {
 		model,
-		temperature: SUMMARIZE_TEMPERATURE,
 		response_format: RESPONSE_FORMAT,
 		messages: [
 			{ role: 'system', content: instructions },
 			{ role: 'user', content },
 		],
-	})
+	}
+	if (summaryTemperature !== undefined) request.temperature = summaryTemperature
+
+	let res = await openai.chat.completions.create(request)
 
 	let msg = res?.choices?.[0]?.message?.content
 	if (!msg) return null
@@ -101,9 +117,18 @@ export async function ai({ url, text }) {
 			if (res) return res
 			await sleep(30e3)
 		} catch (e) {
+			if (isTemperatureUnsupported(e) && summaryTemperature !== undefined) {
+				summaryTemperature = undefined
+				log('AI summarize: temperature unsupported, retrying without temperature', '\n', e)
+				log('AI summarize:', describeSummarizeSettings(model))
+				i--
+				continue
+			}
+
 			if ((isUnsupportedModel(e) || isModelNotFound(e)) && !explicitModel && model !== FALLBACK_OPENAI_MODEL) {
 				log('AI model failed:', model, '\nFalling back to:', FALLBACK_OPENAI_MODEL, '\n', e)
 				model = FALLBACK_OPENAI_MODEL
+				summaryTemperature = temperatureForModel(model)
 				log('AI summarize:', describeSummarizeSettings(model))
 				i--
 				continue
@@ -115,4 +140,3 @@ export async function ai({ url, text }) {
 	}
 	return null
 }
-
