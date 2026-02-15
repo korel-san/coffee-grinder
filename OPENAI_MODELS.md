@@ -34,8 +34,8 @@ Facts and video links are generated via `grinder/src/enrich.js` using Chat Compl
 
 Env vars:
 
-- `OPENAI_FACTS_MODEL` (default: `gpt-4o-mini-search-preview`)
-- `OPENAI_VIDEOS_MODEL` (default: `gpt-4o-mini-search-preview`)
+- `OPENAI_FACTS_MODEL` (default: `gpt-5-search-api`, fallback: `gpt-4o-mini-search-preview`)
+- `OPENAI_VIDEOS_MODEL` (default: `gpt-5-search-api`, fallback: `gpt-4o-mini-search-preview`)
 - `OPENAI_WEBSEARCH_MODEL` (optional shared default for both)
 - `OPENAI_WEBSEARCH_CONTEXT_SIZE` (optional)
 - `OPENAI_WEBSEARCH_COUNTRY` / `OPENAI_WEBSEARCH_CITY` / `OPENAI_WEBSEARCH_REGION` / `OPENAI_WEBSEARCH_TIMEZONE` (optional)

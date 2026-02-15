@@ -7,9 +7,15 @@ import { getPrompt } from './prompts.js'
 
 const openai = new OpenAI()
 
-const DEFAULT_WEBSEARCH_MODEL = 'gpt-4o-mini-search-preview'
-const factsModel = process.env.OPENAI_FACTS_MODEL || process.env.OPENAI_WEBSEARCH_MODEL || DEFAULT_WEBSEARCH_MODEL
-const videosModel = process.env.OPENAI_VIDEOS_MODEL || process.env.OPENAI_WEBSEARCH_MODEL || DEFAULT_WEBSEARCH_MODEL
+const DEFAULT_WEBSEARCH_MODEL = 'gpt-5-search-api'
+const FALLBACK_WEBSEARCH_MODEL = 'gpt-4o-mini-search-preview'
+
+const explicitWebsearchModel = process.env.OPENAI_WEBSEARCH_MODEL
+const explicitFactsModel = process.env.OPENAI_FACTS_MODEL || explicitWebsearchModel
+const explicitVideosModel = process.env.OPENAI_VIDEOS_MODEL || explicitWebsearchModel
+
+const factsModel = explicitFactsModel || DEFAULT_WEBSEARCH_MODEL
+const videosModel = explicitVideosModel || DEFAULT_WEBSEARCH_MODEL
 
 function webSearchOptions() {
 	let search_context_size = process.env.OPENAI_WEBSEARCH_CONTEXT_SIZE
@@ -34,25 +40,39 @@ function webSearchOptions() {
 	return opts
 }
 
-async function chatWithWebSearch({ model, system, user, label }) {
+function isModelNotFound(e) {
+	return e?.code === 'model_not_found' || e?.status === 404
+}
+
+async function chatWithWebSearch({ model, allowFallback, system, user, label }) {
 	let opts = webSearchOptions()
-	for (let i = 0; i < 3; i++) {
-		try {
-			let res = await openai.chat.completions.create({
-				model,
-				web_search_options: opts,
-				temperature: 0.2,
-				messages: [
-					{ role: 'system', content: system },
-					{ role: 'user', content: user },
-				],
-			})
-			let content = res?.choices?.[0]?.message?.content
-			if (content) return content.trim()
-			log(label, 'AI empty response')
-		} catch (e) {
-			log(label, 'AI failed\n', e)
-			await sleep(30e3)
+	let models = allowFallback && model !== FALLBACK_WEBSEARCH_MODEL
+		? [model, FALLBACK_WEBSEARCH_MODEL]
+		: [model]
+
+	for (let m of models) {
+		for (let i = 0; i < 3; i++) {
+			try {
+				let res = await openai.chat.completions.create({
+					model: m,
+					web_search_options: opts,
+					temperature: 0.2,
+					messages: [
+						{ role: 'system', content: system },
+						{ role: 'user', content: user },
+					],
+				})
+				let content = res?.choices?.[0]?.message?.content
+				if (content) return content.trim()
+				log(label, 'AI empty response')
+			} catch (e) {
+				if (isModelNotFound(e) && allowFallback && m !== FALLBACK_WEBSEARCH_MODEL) {
+					log(label, 'Model not available:', m, 'falling back to:', FALLBACK_WEBSEARCH_MODEL)
+					break
+				}
+				log(label, 'AI failed\n', e)
+				await sleep(30e3)
+			}
 		}
 	}
 }
@@ -63,6 +83,7 @@ export async function collectFacts({ titleEn, titleRu, text, url }) {
 	let input = `URL: ${url}\nTitle: ${title}\n\nArticle text:\n${text}`
 	return await chatWithWebSearch({
 		model: factsModel,
+		allowFallback: !explicitFactsModel,
 		system: prompt,
 		user: input,
 		label: 'FACTS',
@@ -75,9 +96,9 @@ export async function collectVideos({ titleEn, titleRu, text, url }) {
 	let input = `URL: ${url}\nTitle: ${title}\n\nArticle text:\n${text}`
 	return await chatWithWebSearch({
 		model: videosModel,
+		allowFallback: !explicitVideosModel,
 		system: prompt,
 		user: input,
 		label: 'VIDEOS',
 	})
 }
-
