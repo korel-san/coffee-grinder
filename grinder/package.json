@@ -8,7 +8,7 @@
     "cleanup": "node -r dotenv/config --no-warnings --experimental-fetch src/0.cleanup",
     "load": "node -r dotenv/config --no-warnings --experimental-fetch src/1.load",
     "summarize": "node -r dotenv/config --no-warnings --experimental-fetch src/2.summarize",
-    "test": "node --test --experimental-test-module-mocks tests",
+    "test": "node --test --experimental-test-module-mocks \"tests/**/*.test.js\"",
     "test:summarize": "node --test --experimental-test-module-mocks tests/summarize.test.js",
     "slides": "node -r dotenv/config --no-warnings --experimental-fetch src/3.slides",
     "screenshots": "node -r dotenv/config --no-warnings --experimental-fetch src/screenshots",
