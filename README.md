@@ -35,3 +35,6 @@ GOOGLE_REFRESH_TOKEN=...
 ```
 
 Make sure the Google account you authorize has access to the Drive folders and Sheets used by the pipeline.
+
+## OpenAI model selection (summarize)
+See `OPENAI_MODELS.md`.
