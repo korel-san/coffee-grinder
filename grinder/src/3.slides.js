@@ -7,8 +7,8 @@ import { presentationExists, createPresentation, addSlide } from './google-slide
 
 export async function slides() {
 	log()
-	if (!await presentationExists()) {
-		news.forEach(e => delete e.sqk)
+	const hadPresentation = !!(await presentationExists())
+	if (!hadPresentation) {
 		await createPresentation()
 	}
 
@@ -16,24 +16,33 @@ export async function slides() {
 	news.sort((a, b) => order(a) - order(b))
 
 	let topicSqk = {}
-	let sqk = news.reduce((sqk, e) => {
+	let hasSqk = false
+	let sqk = news.reduce((nextSqk, e) => {
 		topicSqk[e.topic] = Math.max(topicSqk[e.topic] || 1, e.topicSqk || 0)
-		return Math.max(sqk, e.sqk || 0)
+		let rowSqk = +e.sqk
+		if (Number.isFinite(rowSqk) && rowSqk > 0) {
+			hasSqk = true
+			return Math.max(nextSqk, rowSqk)
+		}
+		return nextSqk
 	}, 3)
+	sqk = hasSqk ? sqk + 1 : 3
 
-	let list = news.filter(e => !e.sqk && e.topic !== 'other')
+	let list = news.filter(e => e.topic !== 'other' && (hadPresentation ? !e.sqk : true))
 	for (let i = 0; i < list.length; i++) {
 		let event = list[i]
-		log(`[${i + 1}/${list.length}]`, `${sqk}. ${event.titleEn || event.titleRu}`)
+		if (!event.sqk) {
+			event.sqk = sqk++
+		}
+		log(`[${i + 1}/${list.length}]`, `${event.sqk}. ${event.titleEn || event.titleRu}`)
 		event.topicSqk = topicSqk[event.topic]++
 		let notes = event.topicSqk > (topics[event.topic]?.max || 0) ? 'NOT INDEXED' : ''
 		await addSlide({
-			sqk,
-			topicId: topics[event.topic]?.id,
+			sqk: event.sqk,
+			topicId: topics[event.topic]?.cardId ?? topics[event.topic]?.id,
 			notes,
 			...event,
 		 })
-		event.sqk = sqk++
 	}
 
 	let screenshots = list.map(e => `${e.sqk}\n${e.url}\n`).join('')
