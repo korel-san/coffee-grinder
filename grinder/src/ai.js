@@ -6,6 +6,11 @@ import { sleep } from './sleep.js'
 import { load } from './google-sheets.js'
 import { aiSheet } from '../config/google-drive.js'
 
+const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini'
+const openAiModel = process.env.OPENAI_SUMMARIZE_MODEL
+	|| process.env.OPENAI_MODEL
+	|| DEFAULT_OPENAI_MODEL
+
 let openai = new OpenAI()
 let assistant
 async function initialize() {
@@ -13,8 +18,9 @@ async function initialize() {
 	assistant = await openai.beta.assistants.create({
 		name: "Summarizer",
 		instructions,
-		model: "gpt-4o",
+		model: openAiModel,
 	})
+	log('AI model:', openAiModel)
 }
 let init = initialize()
 

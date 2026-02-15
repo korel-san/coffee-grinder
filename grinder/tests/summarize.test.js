@@ -59,6 +59,7 @@ mock.module(mod('browse-article.js'), {
 })
 
 const extractCalls = new Map()
+const altCalls = new Map()
 mock.module(mod('newsapi.js'), {
 	namedExports: {
 		extractArticleInfo: async (url) => {
@@ -73,6 +74,17 @@ mock.module(mod('newsapi.js'), {
 			}
 
 			return fixtureNewsApi[url]
+		},
+		findAlternativeArticles: async (url) => {
+			altCalls.set(url, (altCalls.get(url) || 0) + 1)
+
+			if (url === 'https://example.com/article-one') {
+				return [
+					{ url: 'https://example.com/article-one-alt', source: 'Alt Agency' },
+				]
+			}
+
+			return []
 		},
 	}
 })
@@ -115,6 +127,7 @@ test('summarize pipeline (mocked)', async () => {
 	assert.equal(extractCalls.get('https://example.com/article-one'), 2, 'article-one should be retried once')
 	assert.equal(extractCalls.get('https://example.com/article-one-alt'), 1, 'fallback agency should be used after retries')
 	assert.equal(extractCalls.get('https://example.com/article-two'), 2, 'article-two should be retried once')
+	assert.equal(altCalls.get('https://example.com/article-one'), 1, 'alternative lookup should be called for article-one')
 
 	const byId = new Map(news.map(item => [String(item.id), item]))
 

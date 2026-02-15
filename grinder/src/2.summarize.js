@@ -6,7 +6,7 @@ import { news } from './store.js'
 import { topics, topicsMap } from '../config/topics.js'
 // import { restricted } from '../config/agencies.js'
 import { decodeGoogleNewsUrl } from './google-news.js'
-import { extractArticleInfo } from './newsapi.js'
+import { extractArticleInfo, findAlternativeArticles } from './newsapi.js'
 import { ai } from './ai.js'
 
 const MIN_TEXT_LENGTH = 400
@@ -57,17 +57,15 @@ async function decodeWithThrottle(last, gnUrl, label = 'Decoding URL...') {
 	return await decodeGoogleNewsUrl(gnUrl)
 }
 
-async function tryOtherAgencies(e, last) {
-	if (!Array.isArray(e.articles) || !e.articles.length) return
+async function tryOtherAgencies(e) {
+	let candidates = await findAlternativeArticles(e.url)
+	if (!candidates.length) return
+	let baseSource = (e.source || '').trim().toLowerCase()
 
-	for (let a of e.articles) {
-		let url = a.url
-		if (!url) {
-			if (!a?.gnUrl) continue
-			if (a.gnUrl === e.gnUrl) continue
-			url = await decodeWithThrottle(last, a.gnUrl, `Decoding fallback URL (${a.source || 'unknown'})...`)
-		}
+	for (let a of candidates) {
+		let url = a?.url
 		if (!url || url === e.url) continue
+		if (baseSource && a.source && a.source.trim().toLowerCase() === baseSource) continue
 
 		log('Extracting fallback', a.source || '', 'article...')
 		let extracted = await extractVerified(url)
@@ -108,7 +106,7 @@ export async function summarize() {
 			let extracted = await extractVerified(e.url)
 			if (!extracted) {
 				log('Failed to extract article text, trying another agency...')
-				extracted = await tryOtherAgencies(e, last)
+				extracted = await tryOtherAgencies(e)
 			}
 			if (extracted) {
 				log('got', extracted.text.length, 'chars')
