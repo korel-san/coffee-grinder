@@ -52,7 +52,25 @@ npm run audio
 - Screenshots use Playwright; if browsers are missing, run `npx playwright install` once.
 
 ## Testing Guidelines
-- No automated test script is currently defined. Validate changes by running the relevant pipeline command(s) and checking `grinder/logs`, `audio/`, and `img/` outputs.
+- Tests live in `grinder/tests/*.test.js` and run via `cd grinder && npm test` (Node's built-in test runner).
+- Prefer fast, deterministic unit/integration-style tests that run fully offline.
+
+## Test Rules
+- Use `node:test` + `--experimental-test-module-mocks` (see existing `grinder/tests/summarize.test.js`).
+- Do not change pipeline script code to make it testable; tests must adapt via mocks.
+- No network and no real providers in tests:
+  - Never call Google APIs, OpenAI, ElevenLabs, Playwright browsers, or RSS endpoints.
+  - Mock internal modules that wrap providers (`grinder/src/google-*.js`, `grinder/src/ai.js`, `grinder/src/eleven.js`, `playwright`, `fetch`, etc.).
+- Keep dependencies minimal:
+  - Prefer small inline fixtures in the test file.
+  - If fixtures are large or reused, store them under `grinder/tests/fixtures/<stage>/...`.
+- Keep tests hermetic and parallel-safe:
+  - Avoid writing to shared paths; prefer mocking `fs`/`fs/promises`.
+  - If a script writes to disk by design, write only to ignored paths and keep filenames unique.
+  - Freeze time when scripts depend on `Date.now()` / `new Date()` for deterministic assertions.
+- Naming:
+  - One script = one test file: `grinder/tests/<script>.test.js` (e.g. `cleanup.test.js`, `load.test.js`, etc.).
+  - One PR per script test (keep diffs small and reviewable).
 
 ## Commit & Pull Request Guidelines
 - Commit history uses short, imperative subjects and occasional Conventional Commit prefixes (e.g., `fix: ...`). Follow that style; `type:` prefixes are optional.
