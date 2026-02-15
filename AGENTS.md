@@ -68,6 +68,7 @@ npm run audio
   - Avoid writing to shared paths; prefer mocking `fs`/`fs/promises`.
   - If a script writes to disk by design, write only to ignored paths and keep filenames unique.
   - Freeze time when scripts depend on `Date.now()` / `new Date()` for deterministic assertions.
+  - Some scripts auto-run based on `process.argv[1]` (e.g. `includes('screenshots')`, `includes('upload-img')`): in tests, temporarily set `process.argv[1] = 'node'` before `import()` to prevent accidental execution during module import.
 - Naming:
   - One script = one test file: `grinder/tests/<script>.test.js` (e.g. `cleanup.test.js`, `load.test.js`, etc.).
   - One PR per script test (keep diffs small and reviewable).
