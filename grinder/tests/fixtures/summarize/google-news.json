@@ -1,3 +1,4 @@
 {
-  "https://news.google.com/rss/articles/test-gn-1": "https://example.com/article-one"
+  "https://news.google.com/rss/articles/test-gn-1": "https://example.com/article-one",
+  "https://news.google.com/rss/articles/test-gn-1-alt": "https://example.com/article-one-alt"
 }

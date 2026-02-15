@@ -6,10 +6,78 @@ import { news } from './store.js'
 import { topics, topicsMap } from '../config/topics.js'
 // import { restricted } from '../config/agencies.js'
 import { decodeGoogleNewsUrl } from './google-news.js'
-import { fetchArticle } from './fetch-article.js'
-import { htmlToText } from './html-to-text.js'
+import { extractArticleInfo } from './newsapi.js'
 import { ai } from './ai.js'
-import { browseArticle, finalyze } from './browse-article.js'
+
+const MIN_TEXT_LENGTH = 400
+const MAX_TEXT_LENGTH = 30000
+
+function normalizeText(text) {
+	return String(text ?? '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function escapeHtml(text) {
+	return String(text)
+		.replaceAll('&', '&amp;')
+		.replaceAll('<', '&lt;')
+		.replaceAll('>', '&gt;')
+}
+
+function wrapHtml({ url, html, text }) {
+	if (html) {
+		return `<!--\n${url}\n-->\n${html}`
+	}
+	if (text) {
+		return `<!--\n${url}\n-->\n<pre>${escapeHtml(text)}</pre>`
+	}
+	return `<!--\n${url}\n-->`
+}
+
+async function extractVerified(url) {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		let info = await extractArticleInfo(url)
+		let text = normalizeText(info?.body)
+		if (text.length > MIN_TEXT_LENGTH) {
+			return {
+				url,
+				title: info?.title,
+				text: text.slice(0, MAX_TEXT_LENGTH),
+				html: info?.bodyHtml,
+			}
+		}
+		if (attempt === 0) log('No text extracted, retrying...')
+	}
+}
+
+async function decodeWithThrottle(last, gnUrl, label = 'Decoding URL...') {
+	await sleep(last.urlDecode.time + last.urlDecode.delay - Date.now())
+	last.urlDecode.delay += last.urlDecode.increment
+	last.urlDecode.time = Date.now()
+	log(label)
+	return await decodeGoogleNewsUrl(gnUrl)
+}
+
+async function tryOtherAgencies(e, last) {
+	if (!Array.isArray(e.articles) || !e.articles.length) return
+
+	for (let a of e.articles) {
+		let url = a.url
+		if (!url) {
+			if (!a?.gnUrl) continue
+			if (a.gnUrl === e.gnUrl) continue
+			url = await decodeWithThrottle(last, a.gnUrl, `Decoding fallback URL (${a.source || 'unknown'})...`)
+		}
+		if (!url || url === e.url) continue
+
+		log('Extracting fallback', a.source || '', 'article...')
+		let extracted = await extractVerified(url)
+		if (extracted) {
+			e.url = url
+			if (a.source) e.source = a.source
+			return extracted
+		}
+	}
+}
 
 export async function summarize() {
 	news.forEach((e, i) => e.id ||= i + 1)
@@ -26,11 +94,7 @@ export async function summarize() {
 		log(`\n#${e.id} [${i + 1}/${list.length}]`, e.titleEn || e.titleRu || '')
 
 		if (!e.url /*&& !restricted.includes(e.source)*/) {
-			await sleep(last.urlDecode.time + last.urlDecode.delay - Date.now())
-			last.urlDecode.delay += last.urlDecode.increment
-			last.urlDecode.time = Date.now()
-			log('Decoding URL...')
-			e.url = await decodeGoogleNewsUrl(e.gnUrl)
+			e.url = await decodeWithThrottle(last, e.gnUrl)
 			if (!e.url) {
 				await sleep(5*60e3)
 				i--
@@ -40,18 +104,17 @@ export async function summarize() {
 		}
 
 		if (e.url) {
-			log('Fetching', e.source || '', 'article...')
-			let html = await fetchArticle(e.url) || await browseArticle(e.url)
-			if (html) {
-				log('got', html.length, 'chars')
-				fs.writeFileSync(`articles/${e.id}.html`, `<!--\n${e.url}\n-->\n${html}`)
-				e.text = htmlToText(html)
+			log('Extracting', e.source || '', 'article...')
+			let extracted = await extractVerified(e.url)
+			if (!extracted) {
+				log('Failed to extract article text, trying another agency...')
+				extracted = await tryOtherAgencies(e, last)
+			}
+			if (extracted) {
+				log('got', extracted.text.length, 'chars')
+				fs.writeFileSync(`articles/${e.id}.html`, wrapHtml(extracted))
+				e.text = extracted.text
 				fs.writeFileSync(`articles/${e.id}.txt`, `${e.titleEn || e.titleRu || ''}\n\n${e.text}`)
-				// let skip = text.indexOf((e.titleEn ?? '').split(' ')[0])
-				// if (skip > 0 && text.length - skip > 1000) {
-				// 	text = text.slice(skip)
-				// }
-				e.text = e.text.slice(0, 30000)
 			}
 		}
 
@@ -81,7 +144,6 @@ export async function summarize() {
 	let order = e => (+e.sqk || 999) * 1000 + (topics[e.topic]?.id ?? 99) * 10 + (+e.priority || 10)
 	news.sort((a, b) => order(a) - order(b))
 
-	finalyze()
 	log('\n', stats)
 }
 

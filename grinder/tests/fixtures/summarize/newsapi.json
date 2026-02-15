@@ -1,0 +1,14 @@
+{
+  "https://example.com/article-one": {
+    "title": "Article One",
+    "body": "This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one. This is extracted text for article one."
+  },
+  "https://example.com/article-one-alt": {
+    "title": "Article One (Alt)",
+    "body": "This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article. This is extracted text for the alt agency article."
+  },
+  "https://example.com/article-two": {
+    "title": "Article Two",
+    "body": "This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two. This is extracted text for article two."
+  }
+}
