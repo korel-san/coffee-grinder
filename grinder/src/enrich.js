@@ -13,7 +13,7 @@ import {
 
 const openai = new OpenAI()
 
-const DEFAULT_WEBSEARCH_MODEL = 'gpt-4.1-mini'
+const DEFAULT_WEBSEARCH_MODEL = 'gpt-5.2'
 const FALLBACK_WEBSEARCH_MODEL = 'gpt-4.1'
 
 const FACTS_TEMPERATURE = 0.2
