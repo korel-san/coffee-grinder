@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { randomUUID } from 'node:crypto'
 import { readEnv } from '../src/env.js'
 import { OAuth2Client } from 'google-auth-library'
 import { sleep } from '../src/sleep.js'
@@ -16,6 +15,54 @@ function hasOAuthConfig() {
 
 function hasServiceAccountConfig() {
 	return !!(process.env.SERVICE_ACCOUNT_EMAIL && process.env.SERVICE_ACCOUNT_KEY)
+}
+
+async function cleanupOldE2ePresentations(rootFolderId, expectedPresentationNames) {
+	const { auth } = await import('../src/google-auth.js')
+	const { default: Drive } = await import('@googleapis/drive')
+	const { trashFile, getFile } = await import('../src/google-drive.js')
+
+	const drive = await Drive.drive({ version: 'v3', auth })
+	const basePrefix = 'coffee-grinder-e2e-'
+	const query = `'${rootFolderId}' in parents and trashed = false and mimeType = 'application/vnd.google-apps.presentation' and name contains '${basePrefix}'`
+
+	const { data } = await drive.files.list({
+		q: query,
+		fields: 'files(id, name)',
+	})
+	const files = data?.files || []
+
+	let removed = 0
+	const explicitNames = Array.isArray(expectedPresentationNames)
+		? expectedPresentationNames
+		: expectedPresentationNames
+			? [expectedPresentationNames]
+			: []
+
+	const explicit = new Set()
+	for (const name of explicitNames) {
+		if (!name) continue
+		const file = await getFile(rootFolderId, name)
+		if (file?.id) explicit.add(file.id)
+	}
+
+	for (const fileId of explicit) {
+		await trashFile(fileId)
+		removed += 1
+	}
+
+	for (const file of files) {
+		if (!file?.id) continue
+		if (explicit.has(file.id)) continue
+		await trashFile(file.id)
+		removed += 1
+	}
+
+	if (removed > 0) {
+		console.log(`test:e2e:slides cleanup: removed ${removed} stale deck(s)`)
+	} else {
+		console.log('test:e2e:slides cleanup: no stale decks found')
+	}
 }
 
 function createOAuthClient() {
@@ -67,18 +114,17 @@ if (!templatePresentationId) missing.push('GOOGLE_TEMPLATE_PRESENTATION_ID')
 if (!templateSlideId) missing.push('GOOGLE_TEMPLATE_SLIDE_ID')
 if (!hasOAuthConfig() && !hasServiceAccountConfig()) missing.push('Google auth env (OAuth or service account)')
 
-const basePresentationName = `coffee-grinder-e2e-${randomUUID()}`
-
 test('e2e: slides builds test deck from existing sheet data', {
 	timeout: 25 * 60_000,
 	skip: missing.length ? missing.join(', ') : false,
 }, async () => {
-	const shortId = randomUUID().slice(0, 8)
-	const runtimeName = `${basePresentationName}-${shortId}`
-	const namedPresentationName = `${runtimeName}-test`
+	const namedPresentationName = process.env.GOOGLE_PRESENTATION_NAME?.trim()
+	assert.ok(namedPresentationName, 'GOOGLE_PRESENTATION_NAME must be set in environment')
 
+	process.env.GOOGLE_PRESENTATION_NAME = namedPresentationName
+
+	const config = await import('../config/google-drive.js')
 	const env = process.env
-	env.GOOGLE_AUTO_PRESENTATION_NAME = namedPresentationName
 
 	const authMode = await pickAuthMode(templatePresentationId)
 	assert.ok(authMode, 'Unable to pick Google auth credentials for E2E')
@@ -95,13 +141,15 @@ test('e2e: slides builds test deck from existing sheet data', {
 
 	// Force auto mode in store/google-slides to use autoPresentationName and avoid
 	// collisions with regular production runs.
-	process.argv[2] = `e2e-auto-${shortId}`
+	process.argv[2] = 'auto'
 
-	const config = await import('../config/google-drive.js')
 	const { getSpreadsheet, loadTable } = await import('../src/google-sheets.js')
-	const { getFile, trashFile } = await import('../src/google-drive.js')
+	const { getFile } = await import('../src/google-drive.js')
 	const { auth } = await import('../src/google-auth.js')
 	const { default: Slides } = await import('@googleapis/slides')
+
+	const cleanupNames = [namedPresentationName]
+	await cleanupOldE2ePresentations(config.rootFolderId, cleanupNames)
 
 	const explainMissingEntity = async (label, id, fetcher) => {
 		try {
@@ -121,13 +169,6 @@ test('e2e: slides builds test deck from existing sheet data', {
 		}
 	}
 
-	const stale = await getFile(config.rootFolderId, config.autoPresentationName)
-	if (stale?.id) {
-		await trashFile(stale.id)
-		console.log('test:e2e:slides removed existing deck', config.autoPresentationName)
-		await sleep(1500)
-	}
-
 	const spreadsheet = await explainMissingEntity('spreadsheet', spreadsheetId, () =>
 		getSpreadsheet(spreadsheetId, 'properties.title'))
 	const title = String(spreadsheet?.data?.properties?.title || '')
@@ -145,9 +186,11 @@ test('e2e: slides builds test deck from existing sheet data', {
 
 	const table = await loadTable(spreadsheetId, `${config.newsSheet}`)
 	assert.equal(table.headers?.includes('topic'), true, "news sheet must include 'topic' column")
-	const toProcess = table.filter(row => !row.sqk && row.topic !== 'other')
+	assert.ok(table.length > 0, 'E2E slides requires news data in test sheet')
+
+	const toProcess = table.filter(row => row.topic !== 'other')
 	if (toProcess.length === 0) {
-		console.warn('E2E slides: no rows to process were found in news sheet')
+		assert.fail(`E2E slides requires at least one row with topic != 'other' in news sheet, got ${table.length} rows total`)
 	}
 
 	const slidesClient = await import('../src/3.slides.js')
@@ -156,7 +199,7 @@ test('e2e: slides builds test deck from existing sheet data', {
 
 	let exists
 	for (let i = 0; i < 6; i++) {
-		exists = await getFile(config.rootFolderId, config.autoPresentationName)
+		exists = await getFile(config.rootFolderId, namedPresentationName)
 		if (exists?.id) break
 		await sleep(1000)
 	}
