@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { randomUUID } from 'node:crypto'
+import { readEnv } from '../src/env.js'
 
 function hasGoogleAuthEnv() {
 	let hasOAuth = !!(
@@ -13,11 +14,11 @@ function hasGoogleAuthEnv() {
 	return hasOAuth || hasServiceAccount
 }
 
-const spreadsheetId = process.env.GOOGLE_SHEET_ID_MAIN
-const rootFolderId = process.env.GOOGLE_ROOT_FOLDER_ID
-const templatePresentationId = process.env.GOOGLE_TEMPLATE_PRESENTATION_ID
-const templateSlideId = process.env.GOOGLE_TEMPLATE_SLIDE_ID
-const templateTableId = process.env.GOOGLE_TEMPLATE_TABLE_ID
+const spreadsheetId = readEnv('GOOGLE_SHEET_ID_MAIN')
+const rootFolderId = readEnv('GOOGLE_ROOT_FOLDER_ID')
+const templatePresentationId = readEnv('GOOGLE_TEMPLATE_PRESENTATION_ID')
+const templateSlideId = readEnv('GOOGLE_TEMPLATE_SLIDE_ID')
+const templateTableId = readEnv('GOOGLE_TEMPLATE_TABLE_ID')
 
 const missing = []
 if (!spreadsheetId) missing.push('GOOGLE_SHEET_ID_MAIN')
@@ -56,14 +57,32 @@ test('e2e: slides builds test deck from existing sheet data', {
 	const { auth } = await import('../src/google-auth.js')
 	const { default: Slides } = await import('@googleapis/slides')
 
+	const explainMissingEntity = async (label, id, fetcher) => {
+		try {
+			return await fetcher()
+		} catch (err) {
+			const msg = `${err?.message || err}`
+			if (/Requested entity was not found|not found/i.test(msg)) {
+				const saEmail = process.env.SERVICE_ACCOUNT_EMAIL || ''
+				const authHint = saEmail ? `service account ${saEmail}` : 'active auth credentials'
+				assert.fail(`E2E slides cannot access ${label} (${id}). `
+					+ `Check that this ID exists, belongs to the right Google account, `
+					+ `and is shared with ${authHint}`)
+			}
+			throw err
+		}
+	}
+
 	const before = await getFile(config.rootFolderId, config.autoPresentationName)
 	assert.equal(before, undefined, 'e2e presentation name collision: cleanup the previous test file first')
 
-	const spreadsheet = await getSpreadsheet(spreadsheetId, 'properties.title')
+	const spreadsheet = await explainMissingEntity('spreadsheet', spreadsheetId, () =>
+		getSpreadsheet(spreadsheetId, 'properties.title'))
 	const title = String(spreadsheet?.data?.properties?.title || '')
 	assert.match(title, /(test|e2e)/i, `Refusing to run E2E against spreadsheet '${title}'`)
 
-	const template = await getSpreadsheet(templatePresentationId, 'properties.title')
+	const template = await explainMissingEntity('template presentation', templatePresentationId, () =>
+		getSpreadsheet(templatePresentationId, 'properties.title'))
 	assert.ok(template?.data, 'test template presentation should be accessible')
 
 	const baseline = await Slides.slides({ version: 'v1', auth }).presentations.get({
