@@ -42,11 +42,11 @@ function pickString(obj, paths) {
 
 function pickFirstMeta(document, selectors) {
 	for (let [nameAttr, contentAttr] of selectors) {
-		let selectors = [
+		let metaSelectors = [
 			`meta[${nameAttr}="${contentAttr}"]`,
 			`meta[${nameAttr}='${contentAttr}']`,
 		]
-		for (let selector of selectors) {
+		for (let selector of metaSelectors) {
 			let node = document.querySelector(selector)
 			if (!node) continue
 			let value = node.getAttribute('content') || node.getAttribute('value')
