@@ -99,7 +99,6 @@ test('e2e: slides builds test deck from existing sheet data', {
 
 	const config = await import('../config/google-drive.js')
 	const { getSpreadsheet, loadTable } = await import('../src/google-sheets.js')
-	const { presentationExists } = await import('../src/google-slides.js')
 	const { getFile, trashFile } = await import('../src/google-drive.js')
 	const { auth } = await import('../src/google-auth.js')
 	const { default: Slides } = await import('@googleapis/slides')
@@ -153,6 +152,7 @@ test('e2e: slides builds test deck from existing sheet data', {
 
 	const slidesClient = await import('../src/3.slides.js')
 	await slidesClient.slides()
+	const { presentationExists } = await import('../src/google-slides.js')
 
 	let exists
 	for (let i = 0; i < 6; i++) {

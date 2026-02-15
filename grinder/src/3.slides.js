@@ -8,9 +8,7 @@ import { presentationExists, createPresentation, addSlide } from './google-slide
 export async function slides() {
 	log()
 	const hadPresentation = !!(await presentationExists())
-	if (!hadPresentation) {
-		await createPresentation()
-	}
+	await createPresentation()
 
 	let order = e => (+e.sqk || 999) * 1000 + (topics[e.topic]?.id ?? 99) * 10 + (+e.priority || 10)
 	news.sort((a, b) => order(a) - order(b))

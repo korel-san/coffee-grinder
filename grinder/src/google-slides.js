@@ -156,16 +156,22 @@ export async function createPresentation() {
 		if (!presentationName) {
 			throw new Error('Missing presentation name for current run mode')
 		}
-	    log('Creating presentation...\n')
+		const existingFile = await getFile(rootFolderId, presentationName)
+		if (existingFile?.id) {
+			presentationId = existingFile.id
+			return presentationId
+		}
 
-	    const srcFileIdParam = templatePresentationId
-	    const dstFolderIdParam = rootFolderId
-	    const dstNameParam = presentationName
+		log('Creating presentation...\n')
 
-	    const copied = await copyFile(srcFileIdParam, dstFolderIdParam, dstNameParam)
-    presentationId = copied.id
-  }
-  return presentationId
+		const srcFileIdParam = templatePresentationId
+		const dstFolderIdParam = rootFolderId
+		const dstNameParam = presentationName
+
+		const copied = await copyFile(srcFileIdParam, dstFolderIdParam, dstNameParam)
+		presentationId = copied.id
+	}
+	return presentationId
 }
 
 export async function addSlide(event) {
