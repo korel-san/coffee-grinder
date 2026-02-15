@@ -25,6 +25,46 @@ const activePresentationName = isAuto ? autoPresentationName : presentationName
 const activeArchiveFolderId = isAuto ? autoArchiveFolderId : archiveFolderId
 
 let slides, presentationId
+let resolvedTemplateSlideId
+let resolvedTemplateTableId
+
+async function resolveTemplateSlideId() {
+	if (resolvedTemplateSlideId) return resolvedTemplateSlideId
+	if (templateSlideId) {
+		resolvedTemplateSlideId = templateSlideId
+		return resolvedTemplateSlideId
+	}
+
+	const presentationIdParam = templatePresentationId
+	const response = await slides.presentations.get({ presentationId: presentationIdParam })
+	const firstSlideId = response.data?.slides?.[0]?.objectId
+	if (!firstSlideId) {
+		throw new Error('Template presentation has no slides to infer template slide id')
+	}
+	resolvedTemplateSlideId = firstSlideId
+	return resolvedTemplateSlideId
+}
+
+async function resolveTemplateTableId() {
+	if (resolvedTemplateTableId) return resolvedTemplateTableId
+	if (templateTableId) {
+		resolvedTemplateTableId = templateTableId
+		return resolvedTemplateTableId
+	}
+
+	const presentationIdParam = templatePresentationId
+	const slideIdParam = await resolveTemplateSlideId()
+	const response = await slides.presentations.get({ presentationId: presentationIdParam })
+	const slide = response.data?.slides?.find(s => s.objectId === slideIdParam)
+	const template = slide ?? response.data?.slides?.[0]
+	const table = template?.pageElements?.find(e => e.table && e.objectId)
+	if (!table?.objectId) {
+		throw new Error(`Template slide ${slideIdParam} has no table object to duplicate`)
+	}
+
+	resolvedTemplateTableId = table.objectId
+	return resolvedTemplateTableId
+}
 
 // ???????????????????? ?????????????? write-???????????????? ?? Slides API
 // ??????????: ?????????? ?????????????? ???? ?????????????? ????????, ?? ???? ???????????? ???? ??????????????.
@@ -147,13 +187,16 @@ export async function addSlide(event) {
   // 1) ?????????????? duplicateObject ?? ?????????????????? templateTableId -> newTableId
   // 2) ?????????? updateTextStyle ???? newTableId
   // 3) updateSlidesPosition ???????????? ?????????????? newSlideId, ?? ???? templateSlideId
+  const templateSlideObjectId = await resolveTemplateSlideId()
+  const templateTableObjectId = await resolveTemplateTableId()
+
   const requests = [
     {
       duplicateObject: {
-        objectId: templateSlideId,
+        objectId: templateSlideObjectId,
         objectIds: {
-          [templateSlideId]: newSlideId,
-          [templateTableId]: newTableId
+          [templateSlideObjectId]: newSlideId,
+          [templateTableObjectId]: newTableId
         }
       }
     },
