@@ -130,12 +130,13 @@ test('e2e: slides builds test deck from existing sheet data', {
 	assert.match(title, /(test|e2e)/i, `Refusing to run E2E against spreadsheet '${title}'`)
 
 	const template = await explainMissingEntity('template presentation', templatePresentationId, () =>
-		getSpreadsheet(templatePresentationId, 'properties.title'))
+		Slides.slides({ version: 'v1', auth }).presentations.get({
+			presentationId: templatePresentationId,
+			fields: 'presentationId,slides.objectId',
+		}))
 	assert.ok(template?.data, 'test template presentation should be accessible')
 
-	const baseline = await Slides.slides({ version: 'v1', auth }).presentations.get({
-		presentationId: templatePresentationId,
-	})
+	const baseline = template
 	const baselineSlides = baseline.data.slides?.length || 0
 
 	const table = await loadTable(spreadsheetId, `${config.newsSheet}`)
