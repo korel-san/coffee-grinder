@@ -1,5 +1,7 @@
 import { log } from './log.js'
 import { htmlToText } from './html-to-text.js'
+import { fetchArticle } from './fetch-article.js'
+import { JSDOM } from 'jsdom'
 
 const ER_API_BASE = 'https://eventregistry.org/api/v1'
 const ER_ANALYTICS_BASE = 'https://analytics.eventregistry.org/api/v1'
@@ -36,6 +38,74 @@ function pickString(obj, paths) {
 		let v = get(obj, path)
 		if (typeof v === 'string' && v.trim()) return v
 	}
+}
+
+function pickFirstMeta(document, selectors) {
+	for (let [nameAttr, contentAttr] of selectors) {
+		let selectors = [
+			`meta[${nameAttr}="${contentAttr}"]`,
+			`meta[${nameAttr}='${contentAttr}']`,
+		]
+		for (let selector of selectors) {
+			let node = document.querySelector(selector)
+			if (!node) continue
+			let value = node.getAttribute('content') || node.getAttribute('value')
+			if (typeof value === 'string' && value.trim()) return value.trim()
+		}
+	}
+}
+
+function parseArticleFromHtml(html) {
+	let dom
+	try {
+		dom = new JSDOM(html)
+	} catch {
+		return
+	}
+
+	let document = dom.window.document
+	let title = ''
+
+	title = pickFirstMeta(document, [
+		['property', 'og:title'],
+		['name', 'twitter:title'],
+		['name', 'title'],
+	])
+
+	if (!title) {
+		let h1 = document.querySelector('h1')
+		if (h1) title = h1.textContent
+	}
+
+	if (!title) title = document.title
+
+	let desc = pickFirstMeta(document, [
+		['name', 'description'],
+		['property', 'og:description'],
+		['name', 'twitter:description'],
+	])
+
+	let articleNode = document.querySelector('article')
+	let rawText = htmlToText(articleNode ? articleNode.innerHTML : document.body?.innerHTML || html)
+
+	let text = `${title ? title + '\n\n' : ''}${desc ? desc + '\n\n' : ''}${rawText || ''}`
+	text = String(text || '').replace(/\n{3,}/g, '\n\n').trim()
+
+	return {
+		title: title?.trim(),
+		body: text,
+		bodyHtml: articleNode ? articleNode.innerHTML : document.body?.innerHTML || html,
+	}
+}
+
+async function extractArticleDirectly(url) {
+	let html = await fetchArticle(url)
+	if (!html) return
+	let parsed = parseArticleFromHtml(html)
+	if (!parsed) return
+
+	if (!parsed.title && !parsed.body) return
+	return parsed
 }
 
 function firstValue(obj) {
@@ -229,6 +299,12 @@ export async function extractArticleInfo(url) {
 			try { info.body = htmlToText(info.bodyHtml) } catch {}
 		}
 		if (info.body || info.bodyHtml) return info
+	}
+
+	let direct = await extractArticleDirectly(url)
+	if (direct?.body || direct?.title) {
+		log('newsapi.ai: extracted fallback from direct page for', url)
+		if (direct.body) return direct
 	}
 
 	// Only log on failure; success is already visible via extracted text length.
