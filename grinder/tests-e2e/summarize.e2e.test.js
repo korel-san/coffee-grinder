@@ -2,6 +2,17 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 
+function norm(v) {
+	return String(v ?? '').trim()
+}
+
+function normalizeHeaders(row) {
+	let headers = Array.isArray(row) ? row.map(norm) : []
+	// Trim trailing empty headers so array lengths stay stable.
+	while (headers.length && !headers[headers.length - 1]) headers.pop()
+	return headers
+}
+
 function parseList(v) {
 	if (typeof v !== 'string') return []
 	return v
@@ -39,7 +50,8 @@ function parseCases() {
 
 	let failUrls = parseList(process.env.E2E_FAIL_URLS)
 	if (!failUrls.length) {
-		failUrls = ['https://example.invalid/coffee-grinder-e2e-missing']
+		// Intentionally "valid" URL but with stopword-only slug => no keyword fallback candidates.
+		failUrls = ['https://example.invalid/the-and-2026-02-03']
 	}
 
 	let cases = []
@@ -86,42 +98,40 @@ test('e2e: summarize writes artifacts into test sheet', { timeout: 25 * 60_000, 
 
 	// Keep E2E cheap by default; allow overriding via env.
 	process.env.OPENAI_SUMMARIZE_MODEL ||= 'gpt-4o-mini'
-	process.env.OPENAI_FACTS_MODEL ||= 'gpt-4o-mini-search-preview'
-	process.env.OPENAI_VIDEOS_MODEL ||= 'gpt-4o-mini-search-preview'
+	process.env.OPENAI_FACTS_MODEL ||= 'gpt-4.1-mini'
+	process.env.OPENAI_VIDEOS_MODEL ||= 'gpt-4.1-mini'
 	process.env.OPENAI_WEBSEARCH_CONTEXT_SIZE ||= 'low'
 
 	await ensureSheet(spreadsheetId, 'news')
 	await ensureSheet(spreadsheetId, 'prompts')
-	await clear(spreadsheetId, 'news!A:Z')
+	let headerRow = await load(spreadsheetId, 'news!A1:AZ1')
+	let headers = normalizeHeaders(headerRow?.[0])
+	assert.ok(headers.length, 'E2E requires a header row in news!A1:AZ1 (copy the production/test template sheet)')
+	assert.ok(!headers.includes('text'), "E2E refuses to run when the 'text' column exists in the news sheet")
+
+	await clear(spreadsheetId, 'news!A2:AZ')
 	await clear(spreadsheetId, 'prompts!A:Z')
 
-	let headers = [
-		'id',
-		'source',
-		'url',
-		'summary',
-		'text',
-		'topic',
-		'priority',
-		'factsRu',
-		'videoUrls',
-		'titleEn',
-		'titleRu',
-	]
-	let rows = cases.map(c => ([
-		c.id,
-		'E2E',
-		c.url,
-		'',
-		'',
-		'',
-		'',
-		'',
-		'',
-		`E2E ${c.label}`,
-		'',
-	]))
-	await save(spreadsheetId, 'news!A1', [headers, ...rows])
+	// Seed prompts up-front so we don't mutate the prompts sheet mid-run.
+	let { seedMissingPrompts } = await import('../src/prompts.js')
+	await seedMissingPrompts(spreadsheetId)
+
+	let rows = cases.map(c => {
+		let row = {
+			id: c.id,
+			source: 'E2E',
+			url: c.url,
+			summary: '',
+			topic: '',
+			priority: '',
+			factsRu: '',
+			videoUrls: '',
+			titleEn: `E2E ${c.label}`,
+			titleRu: '',
+		}
+		return headers.map(h => row[h] ?? '')
+	})
+	await save(spreadsheetId, 'news!A2', rows)
 
 	// Clean local artifacts to make assertions meaningful.
 	for (let c of cases) {
@@ -149,16 +159,16 @@ test('e2e: summarize writes artifacts into test sheet', { timeout: 25 * 60_000, 
 		assert.ok(String(e.url || '').trim().length > 0, `expected url to be set (id=${c.id})`)
 
 		if (c.expect === 'ok') {
-			assert.ok(String(e.text || '').trim().length > 400, `expected extracted text (id=${c.id})`)
 			assert.ok(String(e.summary || '').trim().length > 0, `expected summary (id=${c.id})`)
 			assert.ok(String(e.factsRu || '').trim().length > 0, `expected factsRu (id=${c.id})`)
 			assert.match(String(e.videoUrls || ''), /https?:\/\//, `expected at least one video URL (id=${c.id})`)
 			assert.ok(fs.existsSync(`articles/${c.id}.txt`), `expected articles/{id}.txt artifact (id=${c.id})`)
+			let txt = fs.readFileSync(`articles/${c.id}.txt`, 'utf8')
+			assert.ok(txt.trim().length > 400, `expected extracted text in articles/{id}.txt artifact (id=${c.id})`)
 			continue
 		}
 
 		assert.ok(!String(e.summary || '').trim(), `expected empty summary for fail case (id=${c.id})`)
-		assert.ok(!String(e.text || '').trim(), `expected empty text for fail case (id=${c.id})`)
 		assert.ok(!fs.existsSync(`articles/${c.id}.txt`), `expected no articles/{id}.txt artifact for fail case (id=${c.id})`)
 	}
 

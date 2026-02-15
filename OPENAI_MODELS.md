@@ -1,7 +1,7 @@
 # OpenAI Models For `grinder` Summarization
 
 `grinder/src/ai.js` uses the OpenAI **Assistants API** for article summarization.
-`grinder/src/enrich.js` uses **Chat Completions + Web Search** for facts/videos enrichment.
+`grinder/src/enrich.js` uses the **Responses API + `web_search` tool** for facts/videos enrichment.
 
 ## Selecting A Model
 
@@ -30,21 +30,41 @@ OPENAI_SUMMARIZE_MODEL=gpt-5-mini-2025-08-07 npm run summarize
 
 ## Web Search (Facts, Videos)
 
-Facts and video links are generated via `grinder/src/enrich.js` using Chat Completions with `web_search_options`.
+Facts and video links are generated via `grinder/src/enrich.js` using **Responses API** (`POST /responses`) with the `web_search` tool.
+
+This path is intentionally strict:
+
+- It always includes `temperature` (to avoid “silent” model incompatibilities and keep behavior tunable).
+- It **hard-restricts** which models are allowed for this case: `web_search` + `temperature`.
+- If you set an incompatible model via env, it fails fast with a clear error.
 
 Env vars:
 
-- `OPENAI_FACTS_MODEL` (default: `gpt-5-search-api`, fallback: `gpt-4o-mini-search-preview`)
-- `OPENAI_VIDEOS_MODEL` (default: `gpt-5-search-api`, fallback: `gpt-4o-mini-search-preview`)
+- `OPENAI_FACTS_MODEL` (default: `gpt-4.1-mini`, fallback: `gpt-4.1`)
+- `OPENAI_VIDEOS_MODEL` (default: `gpt-4.1-mini`, fallback: `gpt-4.1`)
 - `OPENAI_WEBSEARCH_MODEL` (optional shared default for both)
 - `OPENAI_WEBSEARCH_CONTEXT_SIZE` (optional)
 - `OPENAI_WEBSEARCH_COUNTRY` / `OPENAI_WEBSEARCH_CITY` / `OPENAI_WEBSEARCH_REGION` / `OPENAI_WEBSEARCH_TIMEZONE` (optional)
 
-Search-capable model IDs (per OpenAI docs):
+Allowed models for `web_search` + `temperature` (per OpenAI docs):
 
-- `gpt-5-search-api`
-- `gpt-4o-search-preview`
-- `gpt-4o-mini-search-preview`
+- `gpt-4.1`
+- `gpt-4.1-mini`
+- `gpt-5.2` (only with `reasoning.effort="none"`; enforced by template)
+
+Not allowed for this case (examples):
+
+- `gpt-4o-mini-search-preview` (does not support `temperature`)
+- `gpt-5`, `gpt-5-mini`, `gpt-5-nano` (do not support `temperature`)
+- `gpt-5-pro`, `gpt-5.2-pro` (do not support `reasoning.effort="none"` thus `temperature` is incompatible)
+
+## Fallback Keywords (Alternative Source Matching)
+
+When an article URL can't be extracted, the summarizer can search for the same event in other sources. To avoid unrelated matches, it asks GPT to select a small set of URL-slug keywords and uses them for strict `keywordOper=and` search in newsapi.ai.
+
+Env var:
+
+- `OPENAI_FALLBACK_KEYWORDS_MODEL` (default: `gpt-4.1-mini`, fallback: `gpt-4.1`)
 
 ## GPT Model Options (IDs + Snapshots)
 

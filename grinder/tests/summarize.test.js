@@ -75,17 +75,17 @@ mock.module(mod('newsapi.js'), {
 
 			return fixtureNewsApi[url]
 		},
-		findAlternativeArticles: async (url) => {
-			altCalls.set(url, (altCalls.get(url) || 0) + 1)
+			findAlternativeArticles: async (url) => {
+				altCalls.set(url, (altCalls.get(url) || 0) + 1)
 
-			if (url === 'https://example.com/article-one') {
-				return [
-					{ url: 'https://example.com/article-one-alt', source: 'Alt Agency' },
-				]
-			}
+				if (url === 'https://example.com/article-one') {
+					return [
+						{ url: 'https://alt.example.com/article-one-alt', source: 'Alt Agency' },
+					]
+				}
 
-			return []
-		},
+				return []
+			},
 	}
 })
 
@@ -111,10 +111,19 @@ mock.module(mod('sleep.js'), {
 	}
 })
 
-mock.module(mod('enrich.js'), {
+	mock.module(mod('enrich.js'), {
+		namedExports: {
+			collectFacts: async ({ url }) => `- Факт для ${url}\n- Еще один факт`,
+			collectVideos: async ({ url }) => `- https://youtube.com/watch?v=mock-${encodeURIComponent(url)}`,
+			describeFactsSettings: () => 'model=mock',
+			describeVideosSettings: () => 'model=mock',
+		}
+	})
+
+mock.module(mod('fallback-keywords.js'), {
 	namedExports: {
-		collectFacts: async ({ url }) => `- Факт для ${url}\n- Еще один факт`,
-		collectVideos: async ({ url }) => `- https://youtube.com/watch?v=mock-${encodeURIComponent(url)}`,
+		extractFallbackKeywords: async () => [],
+		describeFallbackKeywordsSettings: () => 'model=mock',
 	}
 })
 
@@ -129,12 +138,12 @@ const { summarize } = await import(mod('2.summarize.js'))
 test('summarize pipeline (mocked)', async () => {
 	fs.mkdirSync(articlesDir, { recursive: true })
 
-	await summarize()
+		await summarize()
 
-	assert.equal(extractCalls.get('https://example.com/article-one'), 2, 'article-one should be retried once')
-	assert.equal(extractCalls.get('https://example.com/article-one-alt'), 1, 'fallback agency should be used after retries')
-	assert.equal(extractCalls.get('https://example.com/article-two'), 2, 'article-two should be retried once')
-	assert.equal(altCalls.get('https://example.com/article-one'), 1, 'alternative lookup should be called for article-one')
+		assert.equal(extractCalls.get('https://example.com/article-one'), 2, 'article-one should be retried once')
+		assert.equal(extractCalls.get('https://alt.example.com/article-one-alt'), 1, 'fallback agency should be used after retries')
+		assert.equal(extractCalls.get('https://example.com/article-two'), 2, 'article-two should be retried once')
+		assert.equal(altCalls.get('https://example.com/article-one'), 1, 'alternative lookup should be called for article-one')
 
 	const byId = new Map(news.map(item => [String(item.id), item]))
 
@@ -143,7 +152,6 @@ test('summarize pipeline (mocked)', async () => {
 		const updated = byId.get(String(row.id))
 		assert.ok(updated, `Missing updated row for id=${row.id}`)
 		assert.ok(updated.summary && String(updated.summary).length > 10, `Missing summary for id=${row.id}`)
-		assert.ok(updated.text && String(updated.text).length > 200, `Missing text for id=${row.id}`)
 		assert.ok(updated.factsRu && String(updated.factsRu).length > 10, `Missing factsRu for id=${row.id}`)
 		assert.ok(updated.videoUrls && String(updated.videoUrls).length > 10, `Missing videoUrls for id=${row.id}`)
 		assert.ok(updated.aiTopic, `Missing aiTopic for id=${row.id}`)
