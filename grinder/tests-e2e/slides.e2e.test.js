@@ -4,6 +4,7 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { readEnv } from '../src/env.js'
 import { OAuth2Client } from 'google-auth-library'
+import { sleep } from '../src/sleep.js'
 
 function hasOAuthConfig() {
 	return !!(
@@ -99,7 +100,7 @@ test('e2e: slides builds test deck from existing sheet data', {
 	const config = await import('../config/google-drive.js')
 	const { getSpreadsheet, loadTable } = await import('../src/google-sheets.js')
 	const { presentationExists } = await import('../src/google-slides.js')
-	const { getFile } = await import('../src/google-drive.js')
+	const { getFile, trashFile } = await import('../src/google-drive.js')
 	const { auth } = await import('../src/google-auth.js')
 	const { default: Slides } = await import('@googleapis/slides')
 
@@ -121,8 +122,12 @@ test('e2e: slides builds test deck from existing sheet data', {
 		}
 	}
 
-	const before = await getFile(config.rootFolderId, config.autoPresentationName)
-	assert.equal(before, undefined, 'e2e presentation name collision: cleanup the previous test file first')
+	const stale = await getFile(config.rootFolderId, config.autoPresentationName)
+	if (stale?.id) {
+		await trashFile(stale.id)
+		console.log('test:e2e:slides removed existing deck', config.autoPresentationName)
+		await sleep(1500)
+	}
 
 	const spreadsheet = await explainMissingEntity('spreadsheet', spreadsheetId, () =>
 		getSpreadsheet(spreadsheetId, 'properties.title'))
@@ -149,7 +154,12 @@ test('e2e: slides builds test deck from existing sheet data', {
 	const slidesClient = await import('../src/3.slides.js')
 	await slidesClient.slides()
 
-	const exists = await getFile(config.rootFolderId, config.autoPresentationName)
+	let exists
+	for (let i = 0; i < 6; i++) {
+		exists = await getFile(config.rootFolderId, config.autoPresentationName)
+		if (exists?.id) break
+		await sleep(1000)
+	}
 	assert.ok(exists, 'presentation should be created')
 	assert.ok(exists.id !== templatePresentationId, 'should not keep template id')
 	assert.match(exists.name || '', /(e2e|test)/i)

@@ -16,13 +16,16 @@ import {
   autoArchiveFolderId
 } from '../config/google-drive.js'
 
-// ?????????? auto
 const argvIndexParam = 2
-const argvValueParam = process.argv[argvIndexParam]
-const isAuto = argvValueParam?.endsWith('auto')
+const isAutoMode = () => process.argv[argvIndexParam]?.endsWith('auto')
 
-const activePresentationName = isAuto ? autoPresentationName : presentationName
-const activeArchiveFolderId = isAuto ? autoArchiveFolderId : archiveFolderId
+function activePresentationName() {
+	return isAutoMode() ? autoPresentationName : presentationName
+}
+
+function activeArchiveFolderId() {
+	return isAutoMode() ? autoArchiveFolderId : archiveFolderId
+}
 
 let slides, presentationId
 let resolvedTemplateSlideId
@@ -113,17 +116,18 @@ function jitterMs(maxJitterMs) {
 }
 
 async function initialize() {
-  const slidesVersionParam = 'v1'
-  const authParam = auth
-  const slidesInitParams = { version: slidesVersionParam, auth: authParam }
+	const slidesVersionParam = 'v1'
+	const authParam = auth
+	const slidesInitParams = { version: slidesVersionParam, auth: authParam }
 
-  slides = await Slides.slides(slidesInitParams)
+	slides = await Slides.slides(slidesInitParams)
 
-  const rootFolderIdParam = rootFolderId
-  const fileNameParam = activePresentationName
-  const existingFile = await getFile(rootFolderIdParam, fileNameParam)
+	const activeName = activePresentationName()
+	const rootFolderIdParam = rootFolderId
+	const fileNameParam = activeName
+	const existingFile = await getFile(rootFolderIdParam, fileNameParam)
 
-  presentationId = existingFile?.id
+	presentationId = existingFile?.id
 }
 let init = initialize()
 
@@ -131,10 +135,10 @@ export async function archivePresentation(name) {
   await init
   if (!presentationId) return
 
-  log('Archiving presentation...')
-  const fileIdParam = presentationId
-  const targetFolderIdParam = activeArchiveFolderId
-  const newNameParam = name
+	log('Archiving presentation...')
+	const fileIdParam = presentationId
+	const targetFolderIdParam = activeArchiveFolderId()
+	const newNameParam = name
 
   await moveFile(fileIdParam, targetFolderIdParam, newNameParam)
   presentationId = null
@@ -146,15 +150,19 @@ export async function presentationExists() {
 }
 
 export async function createPresentation() {
-  await init
-  if (!presentationId) {
-    log('Creating presentation...\n')
+	await init
+	if (!presentationId) {
+		const presentationName = activePresentationName()
+		if (!presentationName) {
+			throw new Error('Missing presentation name for current run mode')
+		}
+	    log('Creating presentation...\n')
 
-    const srcFileIdParam = templatePresentationId
-    const dstFolderIdParam = rootFolderId
-    const dstNameParam = activePresentationName
+	    const srcFileIdParam = templatePresentationId
+	    const dstFolderIdParam = rootFolderId
+	    const dstNameParam = presentationName
 
-    const copied = await copyFile(srcFileIdParam, dstFolderIdParam, dstNameParam)
+	    const copied = await copyFile(srcFileIdParam, dstFolderIdParam, dstNameParam)
     presentationId = copied.id
   }
   return presentationId
