@@ -9,6 +9,8 @@ E2E tests are opt-in and write into a dedicated **test** Google Spreadsheet.
 3. Set `GOOGLE_SHEET_ID_MAIN` in `.env.e2e` to your test spreadsheet id
 4. Rename the spreadsheet title to include `test` or `e2e` (safety check)
 
+Note: If `SERVICE_ACCOUNT_EMAIL` + `SERVICE_ACCOUNT_KEY` are set, the E2E test will prefer the service account auth (more stable for automation).
+
 ## Cases
 
 Provide multiple URLs via one of:

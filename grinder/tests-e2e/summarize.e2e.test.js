@@ -71,6 +71,13 @@ if (missing.length) {
 }
 
 test('e2e: summarize writes artifacts into test sheet', { timeout: 25 * 60_000, skip: missing.length ? missing.join(', ') : false }, async () => {
+	// Prefer service account for E2E if present (OAuth refresh tokens are flaky in automation).
+	if (process.env.SERVICE_ACCOUNT_EMAIL && process.env.SERVICE_ACCOUNT_KEY) {
+		process.env.GOOGLE_CLIENT_ID = ''
+		process.env.GOOGLE_CLIENT_SECRET = ''
+		process.env.GOOGLE_REFRESH_TOKEN = ''
+	}
+
 	let { clear, ensureSheet, getSpreadsheet, load, loadTable, save } = await import('../src/google-sheets.js')
 
 	let ss = await getSpreadsheet(spreadsheetId, 'properties.title')
