@@ -18,7 +18,11 @@ if (!process.env.OPENAI_API_KEY) missing.push('OPENAI_API_KEY')
 if (!process.env.NEWS_API_KEY) missing.push('NEWS_API_KEY')
 if (!hasGoogleAuthEnv()) missing.push('Google auth env (OAuth or service account)')
 
-test('e2e: summarize writes artifacts into test sheet', { timeout: 12 * 60_000, skip: missing.length > 0 }, async () => {
+if (missing.length) {
+	console.warn('E2E summarize skipped; missing env:', missing.join(', '))
+}
+
+test('e2e: summarize writes artifacts into test sheet', { timeout: 12 * 60_000, skip: missing.length ? missing.join(', ') : false }, async () => {
 	let { clear, ensureSheet, getSpreadsheet, load, loadTable, save } = await import('../src/google-sheets.js')
 
 	let ss = await getSpreadsheet(spreadsheetId, 'properties.title')
