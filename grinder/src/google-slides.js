@@ -104,6 +104,17 @@ function getRetryAfterMs(e) {
   return Math.floor(retryAfterSeconds * 1000)
 }
 
+function sanitizeFieldValue(value) {
+	if (value === undefined || value === null) return ''
+
+	const text = String(value).trim()
+	const cleaned = text.replace(/\{\{\s*[^{}]+\s*\}\}/g, '').trim()
+	if (!cleaned || /^\{\{\s*[^{}]+\s*\}$/.test(cleaned)) {
+		return '\u200B'
+	}
+	return cleaned
+}
+
 function isRateLimitError(e) {
   const status = e?.response?.status ?? e?.status
   const reason = e?.errors?.[0]?.reason
@@ -188,11 +199,11 @@ export async function addSlide(event) {
 
   // ???????????? ????????????
   const replaceMap = {
-    '{{title}}': title,
-    '{{summary}}': event.summary ?? '',
-    '{{sqk}}': event.sqk ?? '',
-    '{{priority}}': event.priority ?? '',
-    '{{notes}}': event.notes ?? ''
+    '{{title}}': sanitizeFieldValue(title),
+    '{{summary}}': sanitizeFieldValue(event.summary),
+    '{{sqk}}': sanitizeFieldValue(event.sqk),
+    '{{priority}}': sanitizeFieldValue(event.priority),
+    '{{notes}}': sanitizeFieldValue(event.notes)
   }
 
   const linkUrl = event.directUrl || event.url || ''
