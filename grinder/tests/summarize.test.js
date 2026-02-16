@@ -115,8 +115,10 @@ mock.module(mod('sleep.js'), {
 		namedExports: {
 			collectFacts: async ({ url }) => `- Факт для ${url}\n- Еще один факт`,
 			collectVideos: async ({ url }) => `- https://youtube.com/watch?v=mock-${encodeURIComponent(url)}`,
+			collectTitleByUrl: async () => ({ titleEn: '', titleRu: '', extra: '' }),
 			describeFactsSettings: () => 'model=mock',
 			describeVideosSettings: () => 'model=mock',
+			describeTitleLookupSettings: () => 'model=mock',
 		}
 	})
 

@@ -249,6 +249,71 @@ function formatFactsForSlide(value) {
 	return outLines.join('\n')
 }
 
+function buildReplaceMap({ titleWithSource, summary, videosText, sqk, priority, factsText }) {
+	return {
+		'{{title}}': replaceWithDefault(titleWithSource),
+		'{{summary}}': replaceWithDefault(summary),
+		'{{videos}}': replaceWithDefault(videosText),
+		'{{sqk}}': replaceWithDefault(sqk),
+		'{{priority}}': replaceWithDefault(priority),
+		'{{notes}}': replaceWithDefault(factsText),
+	}
+}
+
+function buildReplaceRequests(replaceMap, newSlideId) {
+	return Object.entries(replaceMap).map(([key, value]) => ({
+		replaceAllText: {
+			containsText: { text: key },
+			replaceText: String(value ?? ''),
+			pageObjectIds: [newSlideId],
+		},
+	}))
+}
+
+function buildCellLinkRequest({ tableId, cell, startIndex, endIndex, url }) {
+	if (!cell || !url || endIndex <= startIndex) return null
+	return {
+		updateTextStyle: {
+			fields: 'link',
+			objectId: tableId,
+			cellLocation: {
+				rowIndex: cell.rowIndex,
+				columnIndex: cell.columnIndex,
+			},
+			textRange: {
+				type: 'FIXED_RANGE',
+				startIndex,
+				endIndex,
+			},
+			style: {
+				link: { url },
+			},
+		},
+	}
+}
+
+function buildVideoLinkRequests({ tableId, videosCell, links }) {
+	if (!videosCell || !Array.isArray(links) || !links.length) return []
+	return links.map(link => ({
+		updateTextStyle: {
+			fields: 'link',
+			objectId: tableId,
+			cellLocation: {
+				rowIndex: videosCell.rowIndex,
+				columnIndex: videosCell.columnIndex,
+			},
+			textRange: {
+				type: 'FIXED_RANGE',
+				startIndex: link.start,
+				endIndex: link.end,
+			},
+			style: {
+				link: { url: link.url },
+			},
+		},
+	}))
+}
+
 function isRateLimitError(e) {
   const status = e?.response?.status ?? e?.status
   const reason = e?.errors?.[0]?.reason
@@ -335,15 +400,14 @@ export async function addSlide(event) {
   const videosPayload = parseVideoLinks(event.videoUrls)
   const factsText = formatFactsForSlide(event.factsRu || event.notes)
 
-  // ???????????? ????????????
-  const replaceMap = {
-    '{{title}}': replaceWithDefault(titleWithSource),
-    '{{summary}}': replaceWithDefault(event.summary),
-    '{{videos}}': replaceWithDefault(videosPayload.text),
-    '{{sqk}}': replaceWithDefault(event.sqk),
-    '{{priority}}': replaceWithDefault(event.priority),
-    '{{notes}}': replaceWithDefault(factsText)
-  }
+  const replaceMap = buildReplaceMap({
+    titleWithSource,
+    summary: event.summary,
+    videosText: videosPayload.text,
+    sqk: event.sqk,
+    priority: event.priority,
+    factsText,
+  })
 
   // ??????????:
   // 1) ?????????????? duplicateObject ?? ?????????????????? templateTableId -> newTableId
@@ -365,6 +429,20 @@ export async function addSlide(event) {
   }
   const titleCell = templatePlaceholderCells?.['{{title}}'] || null
   const videosCell = templatePlaceholderCells?.['{{videos}}'] || null
+  const titleLinkStart = title ? title.length + 1 : 0
+  const titleLinkEnd = titleLinkStart + linkUrl.length
+  const titleLinkRequest = buildCellLinkRequest({
+    tableId: newTableId,
+    cell: titleCell,
+    startIndex: titleLinkStart,
+    endIndex: titleLinkEnd,
+    url: linkUrl,
+  })
+  const videoLinkRequests = buildVideoLinkRequests({
+    tableId: newTableId,
+    videosCell,
+    links: videosPayload.links,
+  })
 
   const requests = [
     {
@@ -375,54 +453,9 @@ export async function addSlide(event) {
         }
       }
     },
-    ...Object.entries(replaceMap).map(([key, value]) => ({
-      replaceAllText: {
-        containsText: { text: key },
-        replaceText: String(value ?? ''),
-        // Scope to the newly created slide (avoid touching existing slides).
-        pageObjectIds: [newSlideId]
-      }
-    })),
-		...((titleCell && titleWithSource && linkUrl) ? [{
-			updateTextStyle: {
-				fields: 'link',
-				objectId: newTableId,
-				cellLocation: {
-					rowIndex: titleCell.rowIndex,
-					columnIndex: titleCell.columnIndex
-				},
-				textRange: {
-					type: 'FIXED_RANGE',
-					startIndex: title ? title.length + 1 : 0,
-					endIndex: (title ? title.length + 1 : 0) + linkUrl.length
-				},
-				style: {
-					link: {
-						url: linkUrl
-					}
-				}
-			}
-		}] : []),
-		...((videosCell && videosPayload.links.length) ? videosPayload.links.map(link => ({
-			updateTextStyle: {
-				fields: 'link',
-				objectId: newTableId,
-				cellLocation: {
-					rowIndex: videosCell.rowIndex,
-					columnIndex: videosCell.columnIndex
-				},
-				textRange: {
-					type: 'FIXED_RANGE',
-					startIndex: link.start,
-					endIndex: link.end
-				},
-				style: {
-					link: {
-						url: link.url
-					}
-				}
-			}
-		})) : []),
+    ...buildReplaceRequests(replaceMap, newSlideId),
+		...(titleLinkRequest ? [titleLinkRequest] : []),
+		...videoLinkRequests,
     {
       replaceAllText: {
         containsText: { text: `{{cat${event.topicId}_card${event.topicSqk}}}` },
