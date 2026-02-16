@@ -253,7 +253,7 @@ export async function addSlide(event) {
       replaceAllText: {
         containsText: { text: key },
         replaceText: String(value ?? ''),
-        pageObjectIds: [newSlideId]
+        pageObjectIds: [newSlideId, newTableId]
       }
     })),
     {

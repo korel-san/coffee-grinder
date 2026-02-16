@@ -140,10 +140,6 @@ test('e2e: slides builds test deck from existing sheet data', {
 		console.log('test:e2e:slides using service account for Google access')
 	}
 
-	// Force auto mode in store/google-slides to use autoPresentationName and avoid
-	// collisions with regular production runs.
-	process.argv[2] = 'auto'
-
 	const { getSpreadsheet, loadTable } = await import('../src/google-sheets.js')
 	const { getFile } = await import('../src/google-drive.js')
 	const { auth } = await import('../src/google-auth.js')
