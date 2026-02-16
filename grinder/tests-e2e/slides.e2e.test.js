@@ -237,6 +237,10 @@ test('e2e: slides builds test deck from existing sheet data', {
 			break
 		}
 	}
-	assert.ok(!text.includes('{{'), 'template placeholders should be replaced')
+	const templateSlides = baselineSlides > 0 ? (done.data.slides || []).slice(baselineSlides) : done.data.slides || []
+	for (let i = 0; i < templateSlides.length; i++) {
+		const slideText = collectStrings(templateSlides[i]).join('\n')
+		assert.ok(!slideText.includes('{{'), `generated slide #${baselineSlides + i + 1} still has template placeholders`)
+	}
 	assert.equal(await presentationExists(), named.id, 'cached deck id should point to created presentation')
 })
