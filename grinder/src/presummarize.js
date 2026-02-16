@@ -7,4 +7,3 @@ const spreadsheetId = process.argv[2]?.endsWith('auto') ? autoSpreadsheetId : ma
 
 await seedMissingPrompts(spreadsheetId)
 log('Prompts ready')
-

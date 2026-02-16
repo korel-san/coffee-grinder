@@ -30,6 +30,8 @@ function activeArchiveFolderId() {
 let slides, presentationId
 let resolvedTemplateSlideId
 let resolvedTemplateTableId
+let resolvedTemplateSlidesCount
+let resolvedTemplateNotesTextShapeIds
 
 async function resolveTemplateSlideId() {
 	if (resolvedTemplateSlideId) return resolvedTemplateSlideId
@@ -40,7 +42,11 @@ async function resolveTemplateSlideId() {
 
 	const presentationIdParam = templatePresentationId
 	const response = await slides.presentations.get({ presentationId: presentationIdParam })
-	const firstSlideId = response.data?.slides?.[0]?.objectId
+	const templateSlides = response.data?.slides
+	if (resolvedTemplateSlidesCount === undefined && Array.isArray(templateSlides)) {
+		resolvedTemplateSlidesCount = templateSlides.length
+	}
+	const firstSlideId = templateSlides?.[0]?.objectId
 	if (!firstSlideId) {
 		throw new Error('Template presentation has no slides to infer template slide id')
 	}
@@ -58,6 +64,9 @@ async function resolveTemplateTableId() {
 	const presentationIdParam = templatePresentationId
 	const slideIdParam = await resolveTemplateSlideId()
 	const response = await slides.presentations.get({ presentationId: presentationIdParam })
+	if (resolvedTemplateSlidesCount === undefined && Array.isArray(response.data?.slides)) {
+		resolvedTemplateSlidesCount = response.data.slides.length
+	}
 	const slide = response.data?.slides?.find(s => s.objectId === slideIdParam)
 	const template = slide ?? response.data?.slides?.[0]
 	const table = template?.pageElements?.find(e => e.table && e.objectId)
@@ -67,6 +76,29 @@ async function resolveTemplateTableId() {
 
 	resolvedTemplateTableId = table.objectId
 	return resolvedTemplateTableId
+}
+
+async function resolveTemplateNotesTextShapeIds() {
+	if (resolvedTemplateNotesTextShapeIds) return resolvedTemplateNotesTextShapeIds
+
+	const presentationIdParam = templatePresentationId
+	const slideIdParam = await resolveTemplateSlideId()
+	const response = await slides.presentations.get({ presentationId: presentationIdParam })
+	if (resolvedTemplateSlidesCount === undefined && Array.isArray(response.data?.slides)) {
+		resolvedTemplateSlidesCount = response.data.slides.length
+	}
+	const slide = response.data?.slides?.find(s => s.objectId === slideIdParam) ?? response.data?.slides?.[0]
+	const notesElements = slide?.slideProperties?.notesPage?.pageElements || []
+
+	const ids = []
+	for (const e of notesElements) {
+		if (!e?.objectId) continue
+		if (!e?.shape?.text) continue
+		ids.push(e.objectId)
+	}
+
+	resolvedTemplateNotesTextShapeIds = ids
+	return resolvedTemplateNotesTextShapeIds
 }
 
 // ???????????????????? ?????????????? write-???????????????? ?? Slides API
@@ -219,17 +251,54 @@ export async function addSlide(event) {
   // 3) updateSlidesPosition ???????????? ?????????????? newSlideId, ?? ???? templateSlideId
   const templateSlideObjectId = await resolveTemplateSlideId()
   const templateTableObjectId = await resolveTemplateTableId()
+  const templateNotesTextShapeObjectIds = await resolveTemplateNotesTextShapeIds()
+  const newNotesShapeIds = (templateNotesTextShapeObjectIds || []).map(() => 'n' + nanoid())
+
+  const baseSlidesCount = Number(resolvedTemplateSlidesCount || 0)
+  const sqkNumber = Number(event.sqk || 0)
+  const insertionIndex = (Number.isFinite(baseSlidesCount) && Number.isFinite(sqkNumber) && sqkNumber >= 3)
+    ? baseSlidesCount + (sqkNumber - 3)
+    : Math.max(0, baseSlidesCount || 0)
+
+  const objectIds = {
+    [templateSlideObjectId]: newSlideId,
+    [templateTableObjectId]: newTableId
+  }
+  for (let i = 0; i < (templateNotesTextShapeObjectIds || []).length; i++) {
+    objectIds[templateNotesTextShapeObjectIds[i]] = newNotesShapeIds[i]
+  }
 
   const requests = [
     {
       duplicateObject: {
         objectId: templateSlideObjectId,
         objectIds: {
-          [templateSlideObjectId]: newSlideId,
-          [templateTableObjectId]: newTableId
+          ...objectIds
         }
       }
     },
+    ...(newNotesShapeIds.length ? (() => {
+      const out = []
+      const notesText = String(replaceWithDefault(event.factsRu) ?? '')
+      for (let i = 0; i < newNotesShapeIds.length; i++) {
+        const objectId = newNotesShapeIds[i]
+        out.push({
+          deleteText: {
+            objectId,
+            textRange: { type: 'ALL' }
+          }
+        })
+        out.push({
+          insertText: {
+            objectId,
+            insertionIndex: 0,
+            // Put notes into the first notes shape; blank the rest to guarantee no {{...}} placeholders remain.
+            text: i === 0 ? notesText : '\u200B'
+          }
+        })
+      }
+      return out
+    })() : []),
     {
       updateTextStyle: {
         fields: 'link',
@@ -253,7 +322,8 @@ export async function addSlide(event) {
       replaceAllText: {
         containsText: { text: key },
         replaceText: String(value ?? ''),
-        pageObjectIds: [newSlideId, newTableId]
+        // Scope to the newly created slide (avoid touching existing slides).
+        pageObjectIds: [newSlideId]
       }
     })),
     {
@@ -267,7 +337,7 @@ export async function addSlide(event) {
       updateSlidesPosition: {
         slideObjectIds: [newSlideId],
         // insertionIndex ???????????? ???????? int >= 0
-        insertionIndex: Math.max(0, Number(event.sqk ?? 0) + 1)
+        insertionIndex: Math.max(0, insertionIndex)
       }
     }
   ]

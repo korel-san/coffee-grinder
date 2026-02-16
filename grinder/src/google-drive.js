@@ -24,7 +24,8 @@ export async function createFolder(folderId, name) {
 export async function getFile(folderId, name) {
 	let drive = await init
 	let files = (await drive.files.list({
-		q: `'${folderId}' in parents and name = '${name}'`,
+		// Do not return trashed files: E2E cleanup and deck creation rely on existence checks.
+		q: `'${folderId}' in parents and trashed = false and name = '${name}'`,
 	})).data.files
 	return files[0]
 }
