@@ -2,7 +2,7 @@ import fs from 'fs'
 
 import { log } from './log.js'
 import { sleep } from './sleep.js'
-import { news } from './store.js'
+import { news, save } from './store.js'
 import { topics, topicsMap, normalizeTopic } from '../config/topics.js'
 // import { restricted } from '../config/agencies.js'
 import { decodeGoogleNewsUrl } from './google-news.js'
@@ -517,6 +517,7 @@ export async function summarize() {
 	}
 	let order = e => (+e.sqk || 999) * 1000 + (topics[e.topic]?.id ?? 99) * 10 + (+e.priority || 10)
 	news.sort((a, b) => order(a) - order(b))
+	await save()
 
 	log('\n', stats)
 }

@@ -417,7 +417,7 @@ export async function addSlide(event) {
   const newSlideId = 's' + nanoid()
   const newTableId = 't' + nanoid()
 
-  const title = `${event.titleEn || event.titleRu || ''}`
+  const title = `${event.titleRu || event.titleEn || ''}`
   const linkUrl = event.usedUrl || event.directUrl || event.url || ''
   const titleWithSource = [title, linkUrl].filter(Boolean).join('\n')
   const videosPayload = parseVideoLinks(event.videoUrls)
