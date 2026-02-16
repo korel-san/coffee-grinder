@@ -39,6 +39,10 @@ Make sure the Google account you authorize has access to the Drive folders and S
 ## OpenAI model selection (summarize)
 See `OPENAI_MODELS.md`.
 
+## Google Sheets operator guide
+For teammates who work only in Google Sheets (without coding), see:
+`GOOGLE_SHEETS_OPERATOR_GUIDE.md`
+
 ## Prompts: update and sync without code changes
 Prompts are stored in Google Sheets in the `prompts` tab and loaded at runtime.
 
