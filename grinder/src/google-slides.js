@@ -110,7 +110,7 @@ function sanitizeFieldValue(value) {
 	const text = String(value).trim()
 	const cleaned = text.replace(/\{\{\s*[^{}]+\s*\}\}/g, '').trim()
 	if (!cleaned || /^\{\{\s*[^{}]+\s*\}$/.test(cleaned)) {
-		return '\u200B'
+		return ''
 	}
 	return cleaned
 }
@@ -248,7 +248,7 @@ export async function addSlide(event) {
       replaceAllText: {
         containsText: { text: key },
         replaceText: String(value ?? ''),
-        pageObjectIds: [newSlideId]
+        pageObjectIds: [newSlideId, newTableId]
       }
     })),
     {

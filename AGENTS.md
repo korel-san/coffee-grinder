@@ -78,3 +78,5 @@ npm run audio
 
 ## Configuration & Secrets
 - Grinder scripts load environment variables via `dotenv`. Store secrets in `grinder/.env` and keep them out of version control.
+- When adding new code in touched files, prefer reading env via `dotenv` once (shared helper) instead of scattered `process.env` accesses. If a file is already using direct `process.env`, refactor to the shared helper while you are there to avoid tech debt.
+- E2E tests must use real integrations (no mocks/stubs); only unit/integration tests may mock.
