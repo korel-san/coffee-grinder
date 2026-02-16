@@ -5,6 +5,17 @@ import { news } from './store.js'
 import { topics, normalizeTopic } from '../config/topics.js'
 import { presentationExists, createPresentation, addSlide } from './google-slides.js'
 
+function normalizeHttpUrl(value) {
+	if (!value) return ''
+	try {
+		let url = new URL(String(value).trim())
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+		return url.toString()
+	} catch {
+		return ''
+	}
+}
+
 export async function slides() {
 	log()
 	const hadPresentation = !!(await presentationExists())
@@ -56,7 +67,7 @@ export async function slides() {
 	}
 
 	let screenshots = list
-		.map(e => ({ sqk: e.sqk, url: e.usedUrl || e.url }))
+		.map(e => ({ sqk: e.sqk, url: normalizeHttpUrl(e.usedUrl || e.url) }))
 		.filter(e => e.sqk && e.url)
 		.map(e => `${e.sqk}\n${e.url}\n`)
 		.join('')

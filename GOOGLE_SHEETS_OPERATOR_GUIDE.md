@@ -8,12 +8,16 @@ This guide is for a teammate who works only in Google Sheets and does not change
 - Manual corrections for titles, summaries, facts, videos, and source URLs
 
 ## Where to edit
-- Main mode sheet: `GOOGLE_SHEET_ID_MAIN`
-- Auto mode sheet: `GOOGLE_SHEET_ID_AUTO`
+- Auto mode sheet: https://docs.google.com/spreadsheets/d/1aTs8t6wp3Ag7yryH2wci_ETdtNWmDu0ePyf-jLdY9NQ/edit?usp=sharing
 - Prompt tab name: `prompts`
 - Data tab name: `news`
 
 Ask a developer for the exact sheet links if needed.
+
+## Rule for developers (tests vs production)
+- E2E/tests must use separate test credentials and separate test keys (`.env.e2e`), not production keys from `.env`.
+- Do not run tests with production Google/OpenAI keys.
+- Production runs use `.env`; test runs use `.env.e2e` only.
 
 ## Prompt editing workflow (no coding)
 1. Open the target spreadsheet.
@@ -27,8 +31,9 @@ Ask a developer for the exact sheet links if needed.
 - Do not rename prompt `name` keys.
 - Do not change header row (`name`, `prompt`).
 - Keep one row per prompt key.
-- If you remove a prompt row by mistake, operator can restore missing defaults with `npm run presummarize`.
-- `npm run presummarize` adds missing prompts only. It does not overwrite existing prompt text.
+- `npm run presummarize` restores missing prompt rows from the versions currently fixed in code.
+- `npm run presummarize` does not sync "latest agreed prompts" automatically and does not overwrite existing prompt text.
+- After prompt changes are approved as stable, developers must save that stable version in code, so future restores use the correct baseline.
 
 ## News tab: key fields and expected format
 - `usedUrl`: final source URL actually used for article/screenshot.
@@ -48,4 +53,3 @@ Ask a developer for the exact sheet links if needed.
 - If wrong facts/videos: update related prompt in `prompts`, rerun pipeline.
 - If wrong article source: fix `usedUrl` (and optionally `alternativeUrls`) in `news`, rerun slides/screenshots.
 - If a row should be ignored: set topic to `other`.
-
