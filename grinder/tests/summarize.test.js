@@ -30,7 +30,10 @@ const news = newsRows.map(row => ({ ...row }))
 const mod = relativePath => pathToFileURL(path.join(srcDir, relativePath)).href
 
 mock.module(mod('store.js'), {
-	namedExports: { news }
+	namedExports: {
+		news,
+		save: async () => {},
+	}
 })
 
 mock.module(mod('google-news.js'), {

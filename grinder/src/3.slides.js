@@ -44,7 +44,7 @@ export async function slides() {
 		if (!event.sqk) {
 			event.sqk = sqk++
 		}
-		log(`[${i + 1}/${list.length}]`, `${event.sqk}. ${event.titleEn || event.titleRu}`)
+		log(`[${i + 1}/${list.length}]`, `${event.sqk}. ${event.titleRu || event.titleEn}`)
 		event.topicSqk = topicSqk[event.topic]++
 		let notes = event.topicSqk > (topics[event.topic]?.max || 0) ? 'NOT INDEXED' : ''
 		await addSlide({

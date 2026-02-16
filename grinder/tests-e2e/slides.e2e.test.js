@@ -248,7 +248,7 @@ test('e2e: slides builds test deck from existing sheet data', {
 
 	const text = collectStrings(done.data).join('\n')
 	for (let row of toProcess.slice(0, 3)) {
-		let title = String(row.titleEn || row.titleRu || '').trim()
+		let title = String(row.titleRu || row.titleEn || '').trim()
 		if (title.length > 0) {
 			assert.ok(text.includes(title), `title should be present in deck text: ${title}`)
 			break
