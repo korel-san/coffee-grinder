@@ -32,12 +32,23 @@ const topicAliases = {
 	'america': '03. US',
 	'world news': '07. World',
 	'worldnews': '07. World',
+	'world news today': '07. World',
+	'world': '07. World',
+	'tech news': '10. Tech',
+	'technews': '10. Tech',
+	'tech-news': '10. Tech',
+	'tech': '10. Tech',
+	'crazy news': '11. Crazy',
+	'crazy': '11. Crazy',
 	'left is losing it': '04. Left reaction',
 	'left is losing it?': '04. Left reaction',
 	'left-is-losing-it': '04. Left reaction',
 	'leftislosingit': '04. Left reaction',
 	'гадание на кофе': '06. Coffee grounds',
 	'gadanie na kofe': '06. Coffee grounds',
+	'маразм': '08. Marasmus',
+	'маразм крепчал': '08. Marasmus',
+	'marasmus': '08. Marasmus',
 }
 
 function normalizeAlias(topic) {
