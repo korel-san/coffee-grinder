@@ -32,6 +32,7 @@ let resolvedTemplateSlideId
 let resolvedTemplateTableId
 let resolvedTemplateSlidesCount
 let resolvedTemplatePlaceholderCells
+let resolvedTemplateNotesTextShapeIds
 
 async function resolveTemplateSlideId() {
 	if (resolvedTemplateSlideId) return resolvedTemplateSlideId
@@ -117,6 +118,28 @@ async function resolveTemplatePlaceholderCells() {
 
 	resolvedTemplatePlaceholderCells = out
 	return resolvedTemplatePlaceholderCells
+}
+
+async function resolveTemplateNotesTextShapeIds() {
+	if (resolvedTemplateNotesTextShapeIds) return resolvedTemplateNotesTextShapeIds
+
+	const presentationIdParam = templatePresentationId
+	const slideIdParam = await resolveTemplateSlideId()
+	const response = await slides.presentations.get({ presentationId: presentationIdParam })
+	if (resolvedTemplateSlidesCount === undefined && Array.isArray(response.data?.slides)) {
+		resolvedTemplateSlidesCount = response.data.slides.length
+	}
+	const slide = response.data?.slides?.find(s => s.objectId === slideIdParam) ?? response.data?.slides?.[0]
+	const notesElements = slide?.slideProperties?.notesPage?.pageElements || []
+
+	const ids = []
+	for (const e of notesElements) {
+		if (!e?.objectId) continue
+		if (!e?.shape?.text) continue
+		ids.push(e.objectId)
+	}
+	resolvedTemplateNotesTextShapeIds = ids
+	return resolvedTemplateNotesTextShapeIds
 }
 
 // ???????????????????? ?????????????? write-???????????????? ?? Slides API
@@ -416,6 +439,8 @@ export async function addSlide(event) {
   const templateSlideObjectId = await resolveTemplateSlideId()
   const templateTableObjectId = await resolveTemplateTableId()
   const templatePlaceholderCells = await resolveTemplatePlaceholderCells()
+  const templateNotesTextShapeObjectIds = await resolveTemplateNotesTextShapeIds()
+  const newNotesShapeIds = (templateNotesTextShapeObjectIds || []).map(() => 'n' + nanoid())
 
   const baseSlidesCount = Number(resolvedTemplateSlidesCount || 0)
   const sqkNumber = Number(event.sqk || 0)
@@ -426,6 +451,9 @@ export async function addSlide(event) {
   const objectIds = {
     [templateSlideObjectId]: newSlideId,
     [templateTableObjectId]: newTableId
+  }
+  for (let i = 0; i < (templateNotesTextShapeObjectIds || []).length; i++) {
+    objectIds[templateNotesTextShapeObjectIds[i]] = newNotesShapeIds[i]
   }
   const titleCell = templatePlaceholderCells?.['{{title}}'] || null
   const videosCell = templatePlaceholderCells?.['{{videos}}'] || null
@@ -453,6 +481,26 @@ export async function addSlide(event) {
         }
       }
     },
+    ...(newNotesShapeIds.length ? (() => {
+      const out = []
+      for (let i = 0; i < newNotesShapeIds.length; i++) {
+        const objectId = newNotesShapeIds[i]
+        out.push({
+          deleteText: {
+            objectId,
+            textRange: { type: 'ALL' }
+          }
+        })
+        out.push({
+          insertText: {
+            objectId,
+            insertionIndex: 0,
+            text: '\u200B'
+          }
+        })
+      }
+      return out
+    })() : []),
     ...buildReplaceRequests(replaceMap, newSlideId),
 		...(titleLinkRequest ? [titleLinkRequest] : []),
 		...videoLinkRequests,
