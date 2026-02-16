@@ -115,6 +115,11 @@ function sanitizeFieldValue(value) {
 	return cleaned
 }
 
+function replaceWithDefault(value) {
+	const normalized = sanitizeFieldValue(value)
+	return normalized || '\u200B'
+}
+
 function isRateLimitError(e) {
   const status = e?.response?.status ?? e?.status
   const reason = e?.errors?.[0]?.reason
@@ -199,11 +204,11 @@ export async function addSlide(event) {
 
   // ???????????? ????????????
   const replaceMap = {
-    '{{title}}': sanitizeFieldValue(title),
-    '{{summary}}': sanitizeFieldValue(event.summary),
-    '{{sqk}}': sanitizeFieldValue(event.sqk),
-    '{{priority}}': sanitizeFieldValue(event.priority),
-    '{{notes}}': sanitizeFieldValue(event.notes)
+    '{{title}}': replaceWithDefault(title),
+    '{{summary}}': replaceWithDefault(event.summary),
+    '{{sqk}}': replaceWithDefault(event.sqk),
+    '{{priority}}': replaceWithDefault(event.priority),
+    '{{notes}}': replaceWithDefault(event.notes)
   }
 
   const linkUrl = event.directUrl || event.url || ''
@@ -248,7 +253,7 @@ export async function addSlide(event) {
       replaceAllText: {
         containsText: { text: key },
         replaceText: String(value ?? ''),
-        pageObjectIds: [newSlideId, newTableId]
+        pageObjectIds: [newSlideId]
       }
     })),
     {
