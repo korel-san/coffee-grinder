@@ -2,7 +2,7 @@ import { news } from './store.js'
 import { log } from './log.js'
 import { loadTable } from './google-sheets.js'
 import { spreadsheetId, axiomSheet } from '../config/google-drive.js'
-import { topicsMap } from '../config/topics.js'
+import { topicsMap, normalizeTopic } from '../config/topics.js'
 
 export async function merge() {
 	let input = await loadTable(spreadsheetId, axiomSheet)
@@ -11,11 +11,12 @@ export async function merge() {
 		if (row && row.json) {
 			try {
 				let res = JSON.parse(row.json.replace('```json', '').replace('```', ''))
-				e.topic ||= topicsMap[res.topic]
+				const normalizedTopic = normalizeTopic(topicsMap[res.topic] || res.topic || '')
+				e.topic ||= normalizedTopic
 				e.priority ||= res.priority
 				e.titleRu ||= res.titleRu
 				e.summary ||= res.summary
-				e.aiTopic = topicsMap[res.topic]
+				e.aiTopic = normalizedTopic || topicsMap[res.topic]
 				e.aiPriority = res.priority
 				log('ok', row.sqk)
 			} catch(e) {

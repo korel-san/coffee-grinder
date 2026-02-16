@@ -3,7 +3,7 @@ import fs from 'fs'
 import { log } from './log.js'
 import { sleep } from './sleep.js'
 import { news } from './store.js'
-import { topics, topicsMap } from '../config/topics.js'
+import { topics, topicsMap, normalizeTopic } from '../config/topics.js'
 // import { restricted } from '../config/agencies.js'
 import { decodeGoogleNewsUrl } from './google-news.js'
 import { extractArticleInfo, findAlternativeArticles } from './newsapi.js'
@@ -255,11 +255,12 @@ export async function summarize() {
 			let res = await ai({ url: e.url, text: articleText })
 			if (res) {
 				last.ai.delay = res.delay
-				e.topic ||= topicsMap[res.topic]
+				const normalizedTopic = normalizeTopic(topicsMap[res.topic] || res.topic || '')
+				e.topic ||= normalizedTopic
 				e.priority ||= res.priority
 				e.titleRu ||= res.titleRu
 				e.summary = res.summary
-				e.aiTopic = topicsMap[res.topic]
+				e.aiTopic = normalizedTopic || topicsMap[res.topic]
 				e.aiPriority = res.priority
 			}
 		}

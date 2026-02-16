@@ -2,7 +2,7 @@ import fs from 'fs'
 
 import { log } from './log.js'
 import { news } from './store.js'
-import { topics } from '../config/topics.js'
+import { topics, normalizeTopic } from '../config/topics.js'
 import { presentationExists, createPresentation, addSlide } from './google-slides.js'
 
 export async function slides() {
@@ -16,6 +16,10 @@ export async function slides() {
 	let topicSqk = {}
 	let hasSqk = false
 	let sqk = news.reduce((nextSqk, e) => {
+		const normalizedTopic = normalizeTopic(e.topic)
+		if (normalizedTopic && e.topic !== normalizedTopic) {
+			e.topic = normalizedTopic
+		}
 		topicSqk[e.topic] = Math.max(topicSqk[e.topic] || 1, e.topicSqk || 0)
 		let rowSqk = +e.sqk
 		if (Number.isFinite(rowSqk) && rowSqk > 0) {
@@ -29,6 +33,14 @@ export async function slides() {
 	let list = news.filter(e => e.topic !== 'other' && (hadPresentation ? !e.sqk : true))
 	for (let i = 0; i < list.length; i++) {
 		let event = list[i]
+		const normalizedTopic = normalizeTopic(event.topic)
+		if (!normalizedTopic) {
+			log(`Cannot map topic '${event.topic || ''}' to known topic map. Skipping article for slides.`)
+			continue
+		}
+		if (event.topic !== normalizedTopic) {
+			event.topic = normalizedTopic
+		}
 		if (!event.sqk) {
 			event.sqk = sqk++
 		}
