@@ -80,6 +80,8 @@ Strict rules:
 – do NOT invent data
 – if a fact cannot be verified with high confidence, do not include it
 – avoid generalities and vague background
+– do NOT include any links or URLs
+– output facts as text only
 
 Critical constraint:
 Only include external facts that are highly reliable, widely documented, and directly relevant to understanding this specific story.
@@ -104,11 +106,16 @@ Task:
 Find 5–10 relevant video links that can be used as B-roll or context for this specific story.
 
 Strict rules:
-- Only include links from highly reliable sources (official channels, major media, government, international organizations).
-- Prefer YouTube when possible, but you may include other major video platforms.
+- Return ONLY YouTube links (\`youtube.com\` or \`youtu.be\`).
+- Do not return links from any other domains.
+- Prefer official channels and major media organizations.
+- Try to find YouTube videos related to this story from these media sources:
+  Forbes Breaking News, Sky News, Reuters, New York Post, Guardian News, Firstpost, NewsX World.
+- Prioritize YouTube uploads from those outlets/channels when available.
 - Avoid low-quality reposts, clickbait, sensationalism, and duplicates.
 - No more than 2 videos from the same channel/source.
 - Do not invent links.
+- If no reliable YouTube links exist, return an empty list.
 
 Formatting:
 - Output only a bullet list.
@@ -143,6 +150,29 @@ Output:
 - Return ONLY valid JSON (no markdown, no comments).
 - The JSON must be exactly:
 { "keywords": ["string", "..."] }`,
+	},
+	{
+		name: 'summarize:title-by-url',
+		prompt: `You are a newsroom web-research assistant.
+
+Input:
+- URL of a news page
+
+Task:
+Use web search and available public snippets/metadata to identify the most likely headline of the article.
+If possible, also provide a very short neutral context line.
+
+Strict rules:
+- Do not invent facts.
+- If confidence is low, return empty strings.
+- No markdown, no prose outside JSON.
+
+Output JSON:
+{
+  "titleEn": "string",   // likely original headline in source language (usually English)
+  "titleRu": "string",   // optional Russian translation of the headline
+  "extra": "string"      // optional one short context sentence in Russian
+}`,
 	},
 	{
 		name: 'audio:audio-transcription',

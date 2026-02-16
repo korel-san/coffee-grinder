@@ -31,7 +31,7 @@ let slides, presentationId
 let resolvedTemplateSlideId
 let resolvedTemplateTableId
 let resolvedTemplateSlidesCount
-let resolvedTemplateNotesTextShapeIds
+let resolvedTemplatePlaceholderCells
 
 async function resolveTemplateSlideId() {
 	if (resolvedTemplateSlideId) return resolvedTemplateSlideId
@@ -78,27 +78,45 @@ async function resolveTemplateTableId() {
 	return resolvedTemplateTableId
 }
 
-async function resolveTemplateNotesTextShapeIds() {
-	if (resolvedTemplateNotesTextShapeIds) return resolvedTemplateNotesTextShapeIds
+function readCellText(cell) {
+	const textElements = cell?.text?.textElements || []
+	let out = ''
+	for (const part of textElements) {
+		out += part?.textRun?.content || ''
+	}
+	return out
+}
+
+async function resolveTemplatePlaceholderCells() {
+	if (resolvedTemplatePlaceholderCells) return resolvedTemplatePlaceholderCells
 
 	const presentationIdParam = templatePresentationId
 	const slideIdParam = await resolveTemplateSlideId()
+	const tableIdParam = await resolveTemplateTableId()
 	const response = await slides.presentations.get({ presentationId: presentationIdParam })
 	if (resolvedTemplateSlidesCount === undefined && Array.isArray(response.data?.slides)) {
 		resolvedTemplateSlidesCount = response.data.slides.length
 	}
 	const slide = response.data?.slides?.find(s => s.objectId === slideIdParam) ?? response.data?.slides?.[0]
-	const notesElements = slide?.slideProperties?.notesPage?.pageElements || []
+	const table = slide?.pageElements?.find(e => e.objectId === tableIdParam && e.table)?.table
 
-	const ids = []
-	for (const e of notesElements) {
-		if (!e?.objectId) continue
-		if (!e?.shape?.text) continue
-		ids.push(e.objectId)
+	const placeholders = ['{{title}}', '{{videos}}', '{{notes}}']
+	const out = {}
+	for (let rowIndex = 0; rowIndex < (table?.tableRows?.length || 0); rowIndex++) {
+		const row = table.tableRows[rowIndex]
+		for (let columnIndex = 0; columnIndex < (row?.tableCells?.length || 0); columnIndex++) {
+			const cell = row.tableCells[columnIndex]
+			const cellText = readCellText(cell)
+			for (const placeholder of placeholders) {
+				if (!out[placeholder] && cellText.includes(placeholder)) {
+					out[placeholder] = { rowIndex, columnIndex }
+				}
+			}
+		}
 	}
 
-	resolvedTemplateNotesTextShapeIds = ids
-	return resolvedTemplateNotesTextShapeIds
+	resolvedTemplatePlaceholderCells = out
+	return resolvedTemplatePlaceholderCells
 }
 
 // ???????????????????? ?????????????? write-???????????????? ?? Slides API
@@ -150,6 +168,85 @@ function sanitizeFieldValue(value) {
 function replaceWithDefault(value) {
 	const normalized = sanitizeFieldValue(value)
 	return normalized || '\u200B'
+}
+
+function isYoutubeUrl(value) {
+	if (!value) return false
+	try {
+		const host = new URL(String(value).trim()).hostname.toLowerCase().replace(/^www\./, '')
+		return host === 'youtube.com'
+			|| host.endsWith('.youtube.com')
+			|| host === 'youtu.be'
+			|| host === 'youtube-nocookie.com'
+			|| host.endsWith('.youtube-nocookie.com')
+	} catch {
+		return false
+	}
+}
+
+function parseVideoLinks(value) {
+	const text = String(value ?? '').trim()
+	if (!text) return { text: '', links: [] }
+
+	const urls = []
+	const seen = new Set()
+	const matches = text.match(/https?:\/\/[^\s]+/g) || []
+	for (let raw of matches) {
+		const clean = String(raw).replace(/[),.;!?]+$/g, '')
+		if (!clean || seen.has(clean)) continue
+		seen.add(clean)
+		urls.push(clean)
+	}
+	if (urls.length) {
+		const sortedUrls = urls.filter(isYoutubeUrl)
+		if (!sortedUrls.length) return { text: '', links: [] }
+
+		let offset = 0
+		const links = sortedUrls.map(url => {
+			const start = offset
+			const end = start + url.length
+			offset = end + 1
+			return { url, start, end }
+		})
+		return { text: sortedUrls.join('\n'), links }
+	}
+	return { text: '', links: [] }
+}
+
+function formatFactsForSlide(value) {
+	const text = String(value ?? '').replace(/\r/g, '').trim()
+	if (!text) return ''
+
+	const lines = text
+		.split('\n')
+		.map(s => s.trim())
+		.filter(Boolean)
+
+	const outLines = []
+
+	for (const rawLine of lines) {
+		const line = rawLine.replace(/^[•*\-\u2022]+\s*/, '').trim()
+		if (!line) continue
+
+		let fact = line
+		let url = ''
+		if (line.includes('||')) {
+			const [factPart, ...rest] = line.split('||')
+			fact = String(factPart ?? '').trim()
+			url = String(rest.join('||') ?? '').trim()
+		} else {
+			const firstUrlMatch = line.match(/https?:\/\/\S+/i)
+			if (firstUrlMatch) {
+				url = String(firstUrlMatch[0]).replace(/[),.;!?]+$/g, '').trim()
+				fact = line.replace(firstUrlMatch[0], '').replace(/\s+/g, ' ').trim()
+			}
+		}
+
+		if (!fact) continue
+		outLines.push(`• ${fact}`)
+	}
+
+	return outLines.join('\n')
 }
 
 function isRateLimitError(e) {
@@ -233,17 +330,20 @@ export async function addSlide(event) {
   const newTableId = 't' + nanoid()
 
   const title = `${event.titleEn || event.titleRu || ''}`
+  const linkUrl = event.usedUrl || event.directUrl || event.url || ''
+  const titleWithSource = [title, linkUrl].filter(Boolean).join('\n')
+  const videosPayload = parseVideoLinks(event.videoUrls)
+  const factsText = formatFactsForSlide(event.factsRu || event.notes)
 
   // ???????????? ????????????
   const replaceMap = {
-    '{{title}}': replaceWithDefault(title),
+    '{{title}}': replaceWithDefault(titleWithSource),
     '{{summary}}': replaceWithDefault(event.summary),
+    '{{videos}}': replaceWithDefault(videosPayload.text),
     '{{sqk}}': replaceWithDefault(event.sqk),
     '{{priority}}': replaceWithDefault(event.priority),
-    '{{notes}}': replaceWithDefault(event.notes)
+    '{{notes}}': replaceWithDefault(factsText)
   }
-
-  const linkUrl = event.directUrl || event.url || ''
 
   // ??????????:
   // 1) ?????????????? duplicateObject ?? ?????????????????? templateTableId -> newTableId
@@ -251,8 +351,7 @@ export async function addSlide(event) {
   // 3) updateSlidesPosition ???????????? ?????????????? newSlideId, ?? ???? templateSlideId
   const templateSlideObjectId = await resolveTemplateSlideId()
   const templateTableObjectId = await resolveTemplateTableId()
-  const templateNotesTextShapeObjectIds = await resolveTemplateNotesTextShapeIds()
-  const newNotesShapeIds = (templateNotesTextShapeObjectIds || []).map(() => 'n' + nanoid())
+  const templatePlaceholderCells = await resolveTemplatePlaceholderCells()
 
   const baseSlidesCount = Number(resolvedTemplateSlidesCount || 0)
   const sqkNumber = Number(event.sqk || 0)
@@ -264,9 +363,8 @@ export async function addSlide(event) {
     [templateSlideObjectId]: newSlideId,
     [templateTableObjectId]: newTableId
   }
-  for (let i = 0; i < (templateNotesTextShapeObjectIds || []).length; i++) {
-    objectIds[templateNotesTextShapeObjectIds[i]] = newNotesShapeIds[i]
-  }
+  const titleCell = templatePlaceholderCells?.['{{title}}'] || null
+  const videosCell = templatePlaceholderCells?.['{{videos}}'] || null
 
   const requests = [
     {
@@ -274,47 +372,6 @@ export async function addSlide(event) {
         objectId: templateSlideObjectId,
         objectIds: {
           ...objectIds
-        }
-      }
-    },
-    ...(newNotesShapeIds.length ? (() => {
-      const out = []
-      const notesText = String(replaceWithDefault(event.factsRu) ?? '')
-      for (let i = 0; i < newNotesShapeIds.length; i++) {
-        const objectId = newNotesShapeIds[i]
-        out.push({
-          deleteText: {
-            objectId,
-            textRange: { type: 'ALL' }
-          }
-        })
-        out.push({
-          insertText: {
-            objectId,
-            insertionIndex: 0,
-            // Put notes into the first notes shape; blank the rest to guarantee no {{...}} placeholders remain.
-            text: i === 0 ? notesText : '\u200B'
-          }
-        })
-      }
-      return out
-    })() : []),
-    {
-      updateTextStyle: {
-        fields: 'link',
-        objectId: newTableId,
-        cellLocation: {
-          rowIndex: 0,
-          columnIndex: 0
-        },
-        // ?????????????????? ???????????? ???? ?????????? ???????????? ????????????, ?????????? ???? ???????????? ?????????? ???? ????????????????
-        textRange: {
-          type: 'ALL'
-        },
-        style: {
-          link: {
-            url: linkUrl
-          }
         }
       }
     },
@@ -326,6 +383,46 @@ export async function addSlide(event) {
         pageObjectIds: [newSlideId]
       }
     })),
+		...((titleCell && titleWithSource && linkUrl) ? [{
+			updateTextStyle: {
+				fields: 'link',
+				objectId: newTableId,
+				cellLocation: {
+					rowIndex: titleCell.rowIndex,
+					columnIndex: titleCell.columnIndex
+				},
+				textRange: {
+					type: 'FIXED_RANGE',
+					startIndex: title ? title.length + 1 : 0,
+					endIndex: (title ? title.length + 1 : 0) + linkUrl.length
+				},
+				style: {
+					link: {
+						url: linkUrl
+					}
+				}
+			}
+		}] : []),
+		...((videosCell && videosPayload.links.length) ? videosPayload.links.map(link => ({
+			updateTextStyle: {
+				fields: 'link',
+				objectId: newTableId,
+				cellLocation: {
+					rowIndex: videosCell.rowIndex,
+					columnIndex: videosCell.columnIndex
+				},
+				textRange: {
+					type: 'FIXED_RANGE',
+					startIndex: link.start,
+					endIndex: link.end
+				},
+				style: {
+					link: {
+						url: link.url
+					}
+				}
+			}
+		})) : []),
     {
       replaceAllText: {
         containsText: { text: `{{cat${event.topicId}_card${event.topicSqk}}}` },

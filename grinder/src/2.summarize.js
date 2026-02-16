@@ -8,7 +8,7 @@ import { topics, topicsMap, normalizeTopic } from '../config/topics.js'
 import { decodeGoogleNewsUrl } from './google-news.js'
 import { extractArticleInfo, findAlternativeArticles } from './newsapi.js'
 import { ai } from './ai.js'
-import { collectFacts, collectVideos, describeFactsSettings, describeVideosSettings } from './enrich.js'
+import { collectFacts, collectVideos, collectTitleByUrl, describeFactsSettings, describeVideosSettings, describeTitleLookupSettings } from './enrich.js'
 import { extractFallbackKeywords, describeFallbackKeywordsSettings } from './fallback-keywords.js'
 
 const MIN_TEXT_LENGTH = 400
@@ -77,6 +77,33 @@ function countKeywordHits(haystack, keywords) {
 	return hits
 }
 
+function normalizeHttpUrl(value) {
+	if (!value) return ''
+	try {
+		let u = new URL(String(value).trim())
+		if (u.protocol !== 'http:' && u.protocol !== 'https:') return ''
+		return u.toString()
+	} catch {
+		return ''
+	}
+}
+
+function parseUrlLines(value) {
+	return String(value ?? '')
+		.replace(/\r/g, '\n')
+		.split(/\n|,/g)
+		.map(v => normalizeHttpUrl(v))
+		.filter(Boolean)
+}
+
+function mergeUrlLines(existingValue, nextUrls) {
+	let merged = uniq([
+		...parseUrlLines(existingValue),
+		...(nextUrls || []).map(v => normalizeHttpUrl(v)).filter(Boolean),
+	])
+	return merged.join('\n')
+}
+
 function ensureColumns(table, cols) {
 	table.headers ||= []
 	for (let c of cols) {
@@ -86,6 +113,85 @@ function ensureColumns(table, cols) {
 
 function normalizeText(text) {
 	return String(text ?? '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function hasMeaningfulText(value) {
+	let text = String(value ?? '')
+		.replace(/\u200B/g, '')
+		.trim()
+	if (!text) return false
+	if (/^\{\{\s*[^{}]+\s*\}\}$/.test(text)) return false
+	return true
+}
+
+function hasVideoLinks(value) {
+	return normalizeVideoUrls(value).length > 0
+}
+
+function isHttpUrl(value) {
+	if (!value) return false
+	try {
+		let url = new URL(String(value).trim())
+		return url.protocol === 'http:' || url.protocol === 'https:'
+	} catch {
+		return false
+	}
+}
+
+function isYoutubeUrl(value) {
+	if (!isHttpUrl(value)) return false
+	try {
+		let host = new URL(String(value).trim()).hostname.toLowerCase().replace(/^www\./, '')
+		return host === 'youtube.com'
+			|| host.endsWith('.youtube.com')
+			|| host === 'youtu.be'
+			|| host === 'youtube-nocookie.com'
+			|| host.endsWith('.youtube-nocookie.com')
+	} catch {
+		return false
+	}
+}
+
+function normalizeVideoUrls(value) {
+	let text = String(value ?? '').trim()
+	if (!text) return ''
+	let matches = text.match(/https?:\/\/[^\s]+/g) || []
+	let urls = uniq(
+		matches
+			.map(u => String(u).replace(/[),.;!?]+$/g, '').trim())
+			.filter(isYoutubeUrl)
+	)
+	return urls.join('\n')
+}
+
+function normalizeFactsValue(value) {
+	let raw = String(value ?? '')
+		.replace(/\r/g, '')
+		.trim()
+	if (!raw) return ''
+
+	let rows = raw
+		.split('\n')
+		.map(s => s.trim())
+		.filter(Boolean)
+
+	let out = []
+	for (let row of rows) {
+		let line = row.replace(/^[•*\-\u2022]+\s*/, '').trim()
+		if (!line) continue
+
+		if (line.includes('||')) {
+			line = String(line.split('||')[0] ?? '').trim()
+		}
+		line = line
+			.replace(/https?:\/\/\S+/gi, '')
+			.replace(/\s+/g, ' ')
+			.trim()
+		if (!line) continue
+		out.push(line)
+	}
+
+	return out.join('\n').trim()
 }
 
 function escapeHtml(text) {
@@ -151,6 +257,18 @@ async function tryOtherAgencies(e) {
 		log('No alternative articles found')
 		return
 	}
+	const currentUrl = normalizeHttpUrl(e.url)
+	const alternativeUrls = uniq(
+		candidates
+			.map(a => normalizeHttpUrl(a?.url))
+			.filter(Boolean)
+			.filter(url => !currentUrl || url !== currentUrl)
+	)
+	if (alternativeUrls.length) {
+		e.alternativeUrls = mergeUrlLines(e.alternativeUrls, alternativeUrls)
+		log('Saved alternative URLs:', alternativeUrls.length)
+	}
+
 	log('Found', candidates.length, 'alternative candidates')
 	let baseSource = (e.source || '').trim().toLowerCase()
 	let baseHost = ''
@@ -205,11 +323,19 @@ async function tryOtherAgencies(e) {
 }
 
 export async function summarize() {
-	ensureColumns(news, ['url', 'factsRu', 'videoUrls'])
+	ensureColumns(news, ['url', 'usedUrl', 'alternativeUrls', 'factsRu', 'videoUrls'])
 
 	news.forEach((e, i) => e.id ||= i + 1)
 
-	let list = news.filter(e => !e.summary && e.topic !== 'other')
+	let list = news.filter(e => (
+		e.topic !== 'other'
+		&& (
+			!hasMeaningfulText(e.summary)
+			|| !hasMeaningfulText(e.factsRu)
+			|| !hasVideoLinks(e.videoUrls)
+			|| !hasMeaningfulText(e.usedUrl)
+		)
+	))
 
 	let stats = { ok: 0, fail: 0 }
 	let last = {
@@ -232,8 +358,14 @@ export async function summarize() {
 			}
 			log('got', e.url)
 		}
-
 		if (e.url) {
+			// Always keep the actually used source URL:
+			// start with original URL, then overwrite with fallback URL if selected later.
+			e.usedUrl = e.url
+		}
+
+		const needsTextWork = !hasMeaningfulText(e.summary) || !hasMeaningfulText(e.factsRu) || !hasVideoLinks(e.videoUrls)
+		if (e.url && needsTextWork) {
 			log('Extracting', e.source || '', 'article...', e.url ? `url=${e.url}` : '')
 			let extracted = await extractVerified(e.url)
 			if (!extracted) {
@@ -241,43 +373,138 @@ export async function summarize() {
 				extracted = await tryOtherAgencies(e)
 			}
 			if (extracted) {
+				e.usedUrl = extracted.url || e.url
 				log('got', extracted.text.length, 'chars')
 				fs.writeFileSync(`articles/${e.id}.html`, wrapHtml(extracted))
 				articleText = extracted.text
 				fs.writeFileSync(`articles/${e.id}.txt`, `${e.titleEn || e.titleRu || ''}\n\n${articleText}`)
+			} else {
+				log('Could not extract article text. Trying URL title lookup...', describeTitleLookupSettings())
+				try {
+					let lookedUp = await collectTitleByUrl({ url: e.usedUrl || e.url })
+					if (lookedUp?.titleEn || lookedUp?.titleRu) {
+						e.titleEn ||= lookedUp.titleEn
+						e.titleRu ||= lookedUp.titleRu
+						log('Title lookup done', `titleEn=${lookedUp.titleEn ? 'yes' : 'no'}`, `titleRu=${lookedUp.titleRu ? 'yes' : 'no'}`)
+					} else {
+						log('Title lookup failed (empty title)')
+					}
+					if (lookedUp?.extra) {
+						log('Title lookup extra:', lookedUp.extra)
+					}
+				} catch (err) {
+					log('Title lookup failed', err?.message || err)
+				}
 			}
 		}
 
-		if (articleText.length > 400) {
-			await sleep(last.ai.time + last.ai.delay - Date.now())
-			last.ai.time = Date.now()
-			log('Summarizing', articleText.length, 'chars...')
-			let res = await ai({ url: e.url, text: articleText })
-			if (res) {
-				last.ai.delay = res.delay
-				const normalizedTopic = normalizeTopic(topicsMap[res.topic] || res.topic || '')
-				e.topic ||= normalizedTopic
-				e.priority ||= res.priority
-				e.titleRu ||= res.titleRu
-				e.summary = res.summary
-				e.aiTopic = normalizedTopic || topicsMap[res.topic]
-				e.aiPriority = res.priority
-			}
-		}
+		const shouldSummarize = articleText.length > 400 && !hasMeaningfulText(e.summary)
+		const shouldCollectFacts = articleText.length > MIN_TEXT_LENGTH && !hasMeaningfulText(e.factsRu)
+		const shouldCollectVideos = articleText.length > MIN_TEXT_LENGTH && !hasVideoLinks(e.videoUrls)
 
-		if (e.summary && articleText.length > MIN_TEXT_LENGTH) {
+		if (shouldSummarize || shouldCollectFacts || shouldCollectVideos) {
 			let enrichInput = { ...e, text: articleText }
-			if (!e.factsRu) {
-				await sleep(last.facts.time + last.facts.delay - Date.now())
-				last.facts.time = Date.now()
-				log('Collecting facts...', describeFactsSettings())
-				e.factsRu = await collectFacts(enrichInput)
+			let tasks = []
+			const makeLogger = (task) => (...params) => task.logs.push(params)
+
+			if (shouldSummarize) {
+				log('Summarizing', articleText.length, 'chars...')
+				let task = {
+					name: 'summary',
+					logs: [],
+					run: async () => {
+						await sleep(last.ai.time + last.ai.delay - Date.now())
+						last.ai.time = Date.now()
+						return await ai({ url: e.url, text: articleText, logger: makeLogger(task) })
+					}
+				}
+				tasks.push(task)
 			}
-			if (!e.videoUrls) {
-				await sleep(last.videos.time + last.videos.delay - Date.now())
-				last.videos.time = Date.now()
+
+			if (shouldCollectFacts) {
+				log('Collecting facts...', describeFactsSettings())
+				let task = {
+					name: 'facts',
+					logs: [],
+					run: async () => {
+						await sleep(last.facts.time + last.facts.delay - Date.now())
+						last.facts.time = Date.now()
+						return await collectFacts(enrichInput, { logger: makeLogger(task) })
+					}
+				}
+				tasks.push(task)
+			}
+
+			if (shouldCollectVideos) {
 				log('Collecting videos...', describeVideosSettings())
-				e.videoUrls = await collectVideos(enrichInput)
+				let task = {
+					name: 'videos',
+					logs: [],
+					run: async () => {
+						await sleep(last.videos.time + last.videos.delay - Date.now())
+						last.videos.time = Date.now()
+						return await collectVideos(enrichInput, { logger: makeLogger(task) })
+					}
+				}
+				tasks.push(task)
+			}
+
+			if (tasks.length > 1) {
+				log('Running in parallel:', tasks.map(t => t.name).join(', '))
+			}
+
+			let results = await Promise.allSettled(tasks.map(t => t.run()))
+			for (let i = 0; i < tasks.length; i++) {
+				let task = tasks[i]
+				let result = results[i]
+
+				for (let params of task.logs || []) {
+					log(...params)
+				}
+
+				if (result.status === 'rejected') {
+					log(`${task.name} failed`, result.reason?.message || result.reason || '')
+					continue
+				}
+
+				if (task.name === 'summary') {
+					let res = result.value
+					if (res) {
+						last.ai.delay = res.delay
+						const normalizedTopic = normalizeTopic(topicsMap[res.topic] || res.topic || '')
+						e.topic ||= normalizedTopic
+						e.priority ||= res.priority
+						e.titleRu ||= res.titleRu
+						e.summary = res.summary
+						e.aiTopic = normalizedTopic || topicsMap[res.topic]
+						e.aiPriority = res.priority
+						log('summary done', `${String(res.summary || '').length} chars`)
+					} else {
+						log('summary failed (empty result)')
+					}
+					continue
+				}
+
+				if (task.name === 'facts') {
+					let factsRu = normalizeFactsValue(result.value)
+					if (factsRu) {
+						e.factsRu = factsRu
+						log('facts done', `${factsRu.length} chars`)
+					} else {
+						log('facts failed (empty result)')
+					}
+					continue
+				}
+
+				if (task.name === 'videos') {
+					let videoUrls = normalizeVideoUrls(result.value)
+					if (videoUrls) {
+						e.videoUrls = videoUrls
+						log('videos done', `${videoUrls.length} chars`)
+					} else {
+						log('videos failed (empty result)')
+					}
+				}
 			}
 		}
 

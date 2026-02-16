@@ -26,6 +26,8 @@
 - Hacks/quick fixes are only allowed by explicit agreement.
 - Use `camelCase` for variables/functions and `PascalCase` for types/classes.
 - Pipeline stages in `grinder/src` use numeric prefixes (`0.cleanup`, `1.load`, `2.summarize`, etc.); keep the ordering pattern.
+- Legacy-совместимость, alias и fallback-ветки запрещены без явного согласования: при изменении модели сразу переводить код на целевую схему и удалять старые сущности.
+- Принцип разработки: необходимое и достаточное. Держать минимум кода, переменных и сущностей; не создавать новые сущности без явной необходимости.
 
 ## Architecture Overview
 - `grinder/src/store.js` loads the `news` table from Google Sheets and saves changes.

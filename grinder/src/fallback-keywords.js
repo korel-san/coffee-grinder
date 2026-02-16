@@ -65,7 +65,7 @@ export function describeFallbackKeywordsSettings() {
 	return `api=chat.completions model=${model}${src} temperature=0 response_format=json_schema`
 }
 
-export async function extractFallbackKeywords(url, manualKeywords, limit = 8) {
+export async function extractFallbackKeywords(url, manualKeywords, limit = 8, { logger = log } = {}) {
 	let allowed = new Set(uniq(manualKeywords))
 	if (!url || allowed.size === 0) return []
 
@@ -103,11 +103,10 @@ export async function extractFallbackKeywords(url, manualKeywords, limit = 8) {
 				return keywords
 			} catch (e) {
 				if (isModelNotFound(e) && !explicitModel && m !== FALLBACK_MODEL) break
-				log('FALLBACK_KEYWORDS AI failed\n', e)
+				logger('FALLBACK_KEYWORDS AI failed\n', e)
 				await sleep(3e3)
 			}
 		}
 	}
 	return []
 }
-

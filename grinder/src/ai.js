@@ -72,7 +72,7 @@ let init = (async () => {
 	log('AI summarize:', describeSummarizeSettings(model))
 })()
 
-async function chatSummarize({ url, text }) {
+async function chatSummarize({ url, text, logger = log }) {
 	let content = `URL: ${url}\nText:\n${text}`
 	const request = {
 		model,
@@ -93,48 +93,48 @@ async function chatSummarize({ url, text }) {
 	try {
 		parsed = JSON.parse(msg)
 	} catch (e) {
-		log('AI fail\n', msg, '\n', e)
+		logger('AI fail\n', msg, '\n', e)
 		return null
 	}
 
 	let used = res?.usage?.total_tokens
 	if (Number.isFinite(used)) {
-		log('got', String(parsed?.summary || '').length, 'chars,', used, 'tokens used')
+		logger('got', String(parsed?.summary || '').length, 'chars,', used, 'tokens used')
 		parsed.delay = used / 30e3 * 60e3
 	} else {
-		log('got', String(parsed?.summary || '').length, 'chars')
+		logger('got', String(parsed?.summary || '').length, 'chars')
 		parsed.delay = 0
 	}
 	return parsed
 }
 
-export async function ai({ url, text }) {
+export async function ai({ url, text, logger = log }) {
 	await init
 
 	for (let i = 0; i < 3; i++) {
 		try {
-			let res = await chatSummarize({ url, text })
+			let res = await chatSummarize({ url, text, logger })
 			if (res) return res
 			await sleep(30e3)
 		} catch (e) {
 			if (isTemperatureUnsupported(e) && summaryTemperature !== undefined) {
 				summaryTemperature = undefined
-				log('AI summarize: temperature unsupported, retrying without temperature', '\n', e)
-				log('AI summarize:', describeSummarizeSettings(model))
+				logger('AI summarize: temperature unsupported, retrying without temperature', '\n', e)
+				logger('AI summarize:', describeSummarizeSettings(model))
 				i--
 				continue
 			}
 
 			if ((isUnsupportedModel(e) || isModelNotFound(e)) && !explicitModel && model !== FALLBACK_OPENAI_MODEL) {
-				log('AI model failed:', model, '\nFalling back to:', FALLBACK_OPENAI_MODEL, '\n', e)
+				logger('AI model failed:', model, '\nFalling back to:', FALLBACK_OPENAI_MODEL, '\n', e)
 				model = FALLBACK_OPENAI_MODEL
 				summaryTemperature = temperatureForModel(model)
-				log('AI summarize:', describeSummarizeSettings(model))
+				logger('AI summarize:', describeSummarizeSettings(model))
 				i--
 				continue
 			}
 
-			log('AI fail\n', e)
+			logger('AI fail\n', e)
 			await sleep(30e3)
 		}
 	}

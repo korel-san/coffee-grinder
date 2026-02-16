@@ -55,7 +55,11 @@ export async function slides() {
 		 })
 	}
 
-	let screenshots = list.map(e => `${e.sqk}\n${e.url}\n`).join('')
+	let screenshots = list
+		.map(e => ({ sqk: e.sqk, url: e.usedUrl || e.url }))
+		.filter(e => e.sqk && e.url)
+		.map(e => `${e.sqk}\n${e.url}\n`)
+		.join('')
 	fs.writeFileSync('../img/screenshots.txt', screenshots)
 	log('\nScreenshots list saved')
 }
