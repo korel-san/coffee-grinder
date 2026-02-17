@@ -198,16 +198,9 @@ test('e2e: slides builds test deck from existing sheet data', {
 		if (!mapped) badTopics.push(row.topic)
 		return { ...row, topic: mapped || row.topic }
 	})
+	const renderableProcess = normalizedProcess.filter(row => String(row.summary || '').trim().length > 0)
 	if (badTopics.length) {
 		assert.fail(`E2E slides found unknown topic(s) not present in config/topics.js: ${badTopics.slice(0, 5).join(', ')}`)
-	}
-
-	const { news } = await import('../src/store.js')
-	for (const normalized of normalizedProcess) {
-		const row = news.find(item => String(item.id || '') === String(normalized.id || '') || String(item.url || '') === String(normalized.url || ''))
-		if (row) {
-			row.topic = normalized.topic
-		}
 	}
 
 	const slidesClient = await import('../src/3.slides.js')
@@ -231,10 +224,10 @@ test('e2e: slides builds test deck from existing sheet data', {
 	})
 
 	const finalSlides = done.data.slides?.length || 0
-	if (toProcess.length > 0) {
+	if (renderableProcess.length > 0) {
 		assert.ok(
-			finalSlides >= baselineSlides + toProcess.length,
-			`expected at least ${baselineSlides + toProcess.length} slides, got ${finalSlides}`,
+			finalSlides >= baselineSlides + renderableProcess.length,
+			`expected at least ${baselineSlides + renderableProcess.length} slides, got ${finalSlides}`,
 		)
 	}
 
@@ -255,12 +248,12 @@ test('e2e: slides builds test deck from existing sheet data', {
 		}
 	}
 	const templateSlides = baselineSlides > 0 ? (done.data.slides || []).slice(baselineSlides) : done.data.slides || []
-	for (let i = 0; i < templateSlides.length && i < normalizedProcess.length; i++) {
+	for (let i = 0; i < templateSlides.length && i < renderableProcess.length; i++) {
 		const slideText = collectStrings(templateSlides[i]).join('\n')
 		const placeholders = [...new Set((slideText.match(/{{[^}]+}}/g) || []))]
 		assert.ok(
 			placeholders.length === 0,
-			`generated slide #${baselineSlides + i + 1} still has unresolved placeholders: ${placeholders.join(', ')} (topic=${normalizedProcess[i]?.topic || toProcess[i]?.topic}, title=${normalizedProcess[i]?.titleEn || toProcess[i]?.titleEn})`,
+			`generated slide #${baselineSlides + i + 1} still has unresolved placeholders: ${placeholders.join(', ')} (topic=${renderableProcess[i]?.topic || toProcess[i]?.topic}, title=${renderableProcess[i]?.titleEn || toProcess[i]?.titleEn})`,
 		)
 	}
 	assert.equal(await presentationExists(), named.id, 'cached deck id should point to created presentation')

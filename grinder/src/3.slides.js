@@ -16,51 +16,63 @@ function normalizeHttpUrl(value) {
 	}
 }
 
+function hasSummary(value) {
+	return String(value ?? '').trim().length > 0
+}
+
 export async function slides() {
 	log()
 	const hadPresentation = !!(await presentationExists())
 	await createPresentation()
 
-	let order = e => (+e.sqk || 999) * 1000 + (topics[e.topic]?.id ?? 99) * 10 + (+e.priority || 10)
-	news.sort((a, b) => order(a) - order(b))
+	let resolvedTopic = new Map(news.map(e => [e, normalizeTopic(e.topic)]))
+
+	let order = e =>
+		(topics[resolvedTopic.get(e)]?.id ?? 99) * 100000 +
+		(+e.priority || 10) * 1000 +
+		(+e.sqk || 999)
+	let sortedNews = [...news].sort((a, b) => order(a) - order(b))
 
 	let topicSqk = {}
-	let hasSqk = false
-	let sqk = news.reduce((nextSqk, e) => {
-		const normalizedTopic = normalizeTopic(e.topic)
-		if (normalizedTopic && e.topic !== normalizedTopic) {
-			e.topic = normalizedTopic
+	let sqk = 4
+	if (hadPresentation) {
+		let maxSqk = 3
+		for (let e of sortedNews) {
+			const topicKey = resolvedTopic.get(e)
+			topicSqk[topicKey] = Math.max(topicSqk[topicKey] || 1, e.topicSqk || 0)
+			let rowSqk = +e.sqk
+			if (Number.isFinite(rowSqk) && rowSqk > 0) {
+				maxSqk = Math.max(maxSqk, rowSqk)
+			}
 		}
-		topicSqk[e.topic] = Math.max(topicSqk[e.topic] || 1, e.topicSqk || 0)
-		let rowSqk = +e.sqk
-		if (Number.isFinite(rowSqk) && rowSqk > 0) {
-			hasSqk = true
-			return Math.max(nextSqk, rowSqk)
-		}
-		return nextSqk
-	}, 3)
-	sqk = hasSqk ? sqk + 1 : 3
+		sqk = maxSqk + 1
+	}
 
-	let list = news.filter(e => e.topic !== 'other' && (hadPresentation ? !e.sqk : true))
+	let list = sortedNews.filter(e =>
+		resolvedTopic.get(e) &&
+		resolvedTopic.get(e) !== 'other' &&
+		hasSummary(e.summary) &&
+		(hadPresentation ? !e.sqk : true),
+	)
 	for (let i = 0; i < list.length; i++) {
 		let event = list[i]
-		const normalizedTopic = normalizeTopic(event.topic)
-		if (!normalizedTopic) {
+		const topicKey = resolvedTopic.get(event)
+		if (!topicKey) {
 			log(`Cannot map topic '${event.topic || ''}' to known topic map. Skipping article for slides.`)
 			continue
 		}
-		if (event.topic !== normalizedTopic) {
-			event.topic = normalizedTopic
-		}
-		if (!event.sqk) {
+		if (!hadPresentation) {
+			event.sqk = sqk++
+		} else if (!event.sqk) {
 			event.sqk = sqk++
 		}
 		log(`[${i + 1}/${list.length}]`, `${event.sqk}. ${event.titleRu || event.titleEn}`)
-		event.topicSqk = topicSqk[event.topic]++
-		let notes = event.topicSqk > (topics[event.topic]?.max || 0) ? 'NOT INDEXED' : ''
+		event.topicSqk = topicSqk[topicKey] || 1
+		topicSqk[topicKey] = event.topicSqk + 1
+		let notes = event.topicSqk > (topics[topicKey]?.max || 0) ? 'NOT INDEXED' : ''
 		await addSlide({
 			sqk: event.sqk,
-			topicId: topics[event.topic]?.cardId ?? topics[event.topic]?.id,
+			topicId: topics[topicKey]?.cardId ?? topics[topicKey]?.id,
 			notes,
 			...event,
 		 })

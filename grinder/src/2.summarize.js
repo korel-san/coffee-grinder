@@ -472,7 +472,6 @@ export async function summarize() {
 					if (res) {
 						last.ai.delay = res.delay
 						const normalizedTopic = normalizeTopic(topicsMap[res.topic] || res.topic || '')
-						e.topic ||= normalizedTopic
 						e.priority ||= res.priority
 						e.titleRu ||= res.titleRu
 						e.summary = res.summary
