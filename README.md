@@ -35,3 +35,25 @@ GOOGLE_REFRESH_TOKEN=...
 ```
 
 Make sure the Google account you authorize has access to the Drive folders and Sheets used by the pipeline.
+
+## OpenAI model selection (summarize)
+See `OPENAI_MODELS.md`.
+
+## Google Sheets operator guide
+For teammates who work only in Google Sheets (without coding), see:
+`GOOGLE_SHEETS_OPERATOR_GUIDE.md`
+
+## Prompts: update and sync without code changes
+Prompts are stored in Google Sheets in the `prompts` tab and loaded at runtime.
+
+1. Open the working spreadsheet (`GOOGLE_SHEET_ID_MAIN` for main mode, `GOOGLE_SHEET_ID_AUTO` for auto mode).
+2. Edit prompt text directly in the `prompts` tab (`name`, `prompt`).
+3. Save in Google Sheets. No code change is required.
+4. Run pipeline scripts normally; updated prompts are picked up automatically on next run.
+
+For team sync from a canonical prompt sheet:
+1. Use one canonical Google Sheet as source of truth for `prompts`.
+2. Copy the `prompts` tab from canonical sheet to your working sheet before running pipeline.
+3. Keep prompt names unchanged (`summarize`, `summarize:facts`, `summarize:videos`, etc.).
+
+`npm run presummarize` only seeds missing prompt names from `grinder/config/prompts.seed.js`. It does not overwrite existing prompt text in Google Sheets.

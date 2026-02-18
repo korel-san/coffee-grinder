@@ -5,6 +5,12 @@
     "priority": 2,
     "titleRu": "Краткий заголовок для статьи один"
   },
+  "https://alt.example.com/article-one-alt": {
+    "summary": "Summary for article one (alt agency) based on mock content.",
+    "topic": "US",
+    "priority": 2,
+    "titleRu": "Краткий заголовок для статьи один"
+  },
   "https://example.com/article-two": {
     "summary": "Summary for article two based on mock content.",
     "topic": "World",

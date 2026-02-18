@@ -9,6 +9,8 @@ audio/*.mp3
 node_modules/
 .npm
 .env
+.env.e2e
+.env.e2e.local
 .claude/
 CLAUDE.md
 .mcp.json

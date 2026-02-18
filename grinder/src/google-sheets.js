@@ -24,6 +24,41 @@ export async function save(spreadsheetId, range, data) {
 	})
 }
 
+export async function clear(spreadsheetId, range) {
+	await init
+	return await sheets.values.clear({ spreadsheetId, range })
+}
+
+export async function append(spreadsheetId, range, data) {
+	await init
+	return await sheets.values.append({
+		spreadsheetId,
+		range,
+		valueInputOption: 'USER_ENTERED',
+		insertDataOption: 'INSERT_ROWS',
+		requestBody: { values: data },
+	})
+}
+
+export async function getSpreadsheet(spreadsheetId, fields = 'sheets.properties.title') {
+	await init
+	return await sheets.get({ spreadsheetId, fields })
+}
+
+export async function ensureSheet(spreadsheetId, title) {
+	const res = await getSpreadsheet(spreadsheetId, 'sheets.properties.title')
+	const titles = res.data.sheets?.map(s => s.properties?.title).filter(Boolean) ?? []
+	if (titles.includes(title)) return
+	return await sheets.batchUpdate({
+		spreadsheetId,
+		requestBody: {
+			requests: [
+				{ addSheet: { properties: { title } } },
+			],
+		},
+	})
+}
+
 export async function loadTable(spreadsheetId, range) {
 	const rows = await load(spreadsheetId, range)
 	// log('Data from sheet:', rows)

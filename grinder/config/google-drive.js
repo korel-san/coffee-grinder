@@ -1,13 +1,16 @@
-export let rootFolderId = '1nJnHBcY252xqV0JDIidsxxhJkY6-w2WO'
-export let mainSpreadsheetId = '19Bt7Kov-1lUfc3bOJ-dNkBcTkQPhLMV2W135x0nlctA'
-export let autoSpreadsheetId = '1aTs8t6wp3Ag7yryH2wci_ETdtNWmDu0ePyf-jLdY9NQ'
+import { readEnv } from '../src/env.js'
+
+export let rootFolderId = readEnv('GOOGLE_ROOT_FOLDER_ID')
+export let mainSpreadsheetId = readEnv('GOOGLE_SHEET_ID_MAIN')
+export let autoSpreadsheetId = readEnv('GOOGLE_SHEET_ID_AUTO')
 export let newsSheet = 'news'
 export let aiSheet = 'ai-instructions'
-export let templatePresentationId = '1Rm5WnQRnEMmw6XDMRIX8l-BZIlt5Sz5CBBtRrzjvpak'
-export let templateSlideId = 'p'
-export let templateTableId = 'g32d1f8c10a8_0_0'
-export let presentationName = 'coffee-maker'
-export let autoPresentationName = 'coffee-maker-auto'
+export let promptsSheet = 'prompts'
+export let templatePresentationId = readEnv('GOOGLE_TEMPLATE_PRESENTATION_ID')
+export let templateSlideId = readEnv('GOOGLE_TEMPLATE_SLIDE_ID')
+export let templateTableId = readEnv('GOOGLE_TEMPLATE_TABLE_ID')
+export let presentationName = readEnv('GOOGLE_PRESENTATION_NAME')
+export let autoPresentationName = readEnv('GOOGLE_AUTO_PRESENTATION_NAME') || presentationName
 export let audioFolderName = 'audio'
 export let imageFolderName = 'img'
 export let archiveFolderId = '1pNa15MULvOIaGqeQAYfxN9e7FX5cLlgR'

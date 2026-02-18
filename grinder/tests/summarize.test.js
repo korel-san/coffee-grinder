@@ -16,7 +16,7 @@ function readJson(filePath) {
 }
 
 const fixtureNews = readJson(path.join(fixturesDir, 'news.json'))
-const fixtureFetch = readJson(path.join(fixturesDir, 'fetch.json'))
+const fixtureNewsApi = readJson(path.join(fixturesDir, 'newsapi.json'))
 const fixtureAi = readJson(path.join(fixturesDir, 'ai.json'))
 const fixtureGoogleNews = readJson(path.join(fixturesDir, 'google-news.json'))
 
@@ -30,7 +30,10 @@ const news = newsRows.map(row => ({ ...row }))
 const mod = relativePath => pathToFileURL(path.join(srcDir, relativePath)).href
 
 mock.module(mod('store.js'), {
-	namedExports: { news }
+	namedExports: {
+		news,
+		save: async () => {},
+	}
 })
 
 mock.module(mod('google-news.js'), {
@@ -41,14 +44,51 @@ mock.module(mod('google-news.js'), {
 
 mock.module(mod('fetch-article.js'), {
 	namedExports: {
-		fetchArticle: async (url) => fixtureFetch[url],
+		fetchArticle: async () => {
+			throw new Error('fetchArticle() should not be used; summarize must use newsapi.ai')
+		},
 	}
 })
 
 mock.module(mod('browse-article.js'), {
 	namedExports: {
-		browseArticle: async (url) => fixtureFetch[url],
-		finalyze: async () => {},
+		browseArticle: async () => {
+			throw new Error('browseArticle() should not be used; summarize must use newsapi.ai')
+		},
+		finalyze: async () => {
+			throw new Error('finalyze() should not be used; summarize must use newsapi.ai')
+		},
+	}
+})
+
+const extractCalls = new Map()
+const altCalls = new Map()
+mock.module(mod('newsapi.js'), {
+	namedExports: {
+		extractArticleInfo: async (url) => {
+			extractCalls.set(url, (extractCalls.get(url) || 0) + 1)
+
+			if (url === 'https://example.com/article-one') {
+				return { title: 'Article One', body: '' }
+			}
+
+			if (url === 'https://example.com/article-two' && extractCalls.get(url) === 1) {
+				return { title: 'Article Two', body: '' }
+			}
+
+			return fixtureNewsApi[url]
+		},
+			findAlternativeArticles: async (url) => {
+				altCalls.set(url, (altCalls.get(url) || 0) + 1)
+
+				if (url === 'https://example.com/article-one') {
+					return [
+						{ url: 'https://alt.example.com/article-one-alt', source: 'Alt Agency' },
+					]
+				}
+
+				return []
+			},
 	}
 })
 
@@ -74,6 +114,24 @@ mock.module(mod('sleep.js'), {
 	}
 })
 
+	mock.module(mod('enrich.js'), {
+		namedExports: {
+			collectFacts: async ({ url }) => `- Факт для ${url}\n- Еще один факт`,
+			collectVideos: async ({ url }) => `- https://youtube.com/watch?v=mock-${encodeURIComponent(url)}`,
+			collectTitleByUrl: async () => ({ titleEn: '', titleRu: '', extra: '' }),
+			describeFactsSettings: () => 'model=mock',
+			describeVideosSettings: () => 'model=mock',
+			describeTitleLookupSettings: () => 'model=mock',
+		}
+	})
+
+mock.module(mod('fallback-keywords.js'), {
+	namedExports: {
+		extractFallbackKeywords: async () => [],
+		describeFallbackKeywordsSettings: () => 'model=mock',
+	}
+})
+
 mock.module(mod('log.js'), {
 	namedExports: {
 		log: () => {},
@@ -85,7 +143,12 @@ const { summarize } = await import(mod('2.summarize.js'))
 test('summarize pipeline (mocked)', async () => {
 	fs.mkdirSync(articlesDir, { recursive: true })
 
-	await summarize()
+		await summarize()
+
+		assert.equal(extractCalls.get('https://example.com/article-one'), 2, 'article-one should be retried once')
+		assert.equal(extractCalls.get('https://alt.example.com/article-one-alt'), 1, 'fallback agency should be used after retries')
+		assert.equal(extractCalls.get('https://example.com/article-two'), 2, 'article-two should be retried once')
+		assert.equal(altCalls.get('https://example.com/article-one'), 1, 'alternative lookup should be called for article-one')
 
 	const byId = new Map(news.map(item => [String(item.id), item]))
 
@@ -94,7 +157,8 @@ test('summarize pipeline (mocked)', async () => {
 		const updated = byId.get(String(row.id))
 		assert.ok(updated, `Missing updated row for id=${row.id}`)
 		assert.ok(updated.summary && String(updated.summary).length > 10, `Missing summary for id=${row.id}`)
-		assert.ok(updated.text && String(updated.text).length > 200, `Missing text for id=${row.id}`)
+		assert.ok(updated.factsRu && String(updated.factsRu).length > 10, `Missing factsRu for id=${row.id}`)
+		assert.ok(updated.videoUrls && String(updated.videoUrls).length > 10, `Missing videoUrls for id=${row.id}`)
 		assert.ok(updated.aiTopic, `Missing aiTopic for id=${row.id}`)
 		assert.ok(updated.aiPriority, `Missing aiPriority for id=${row.id}`)
 		if (row.gnUrl) {
